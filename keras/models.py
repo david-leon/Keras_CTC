@@ -438,7 +438,7 @@ class Sequential(Model, containers.Sequential):
 
     Inherits from containers.Sequential.
     '''
-    def compile(self, optimizer, loss, class_mode="categorical", sample_weight_mode=None, mask=False):
+    def compile(self, optimizer, loss, class_mode="categorical", sample_weight_mode=None, masking=False):
         '''Configure the learning process.
 
         # Arguments
@@ -470,7 +470,7 @@ class Sequential(Model, containers.Sequential):
         if class_mode == 'ctc':
             # self.y = T.matrix('ground_truth', dtype=self.y_train.dtype)
             self.y = K.placeholder(ndim=2, dtype=self.y_train.dtype, name='ground_truth')
-            if mask == True:
+            if masking == True:
                 # self.y_mask = T.matrix('y_mask', dtype=self.y.dtype)
                 # self.y_train_mask = T.matrix('y_train_mask', dtype=self.y_train.dtype)
                 # self.y_test_mask = T.matrix('y_test_mask', dtype=self.y_train.dtype)
@@ -531,7 +531,7 @@ class Sequential(Model, containers.Sequential):
             predict_ins = self.X_test
         else:
             if class_mode == 'ctc':
-                if mask == False:
+                if masking == False:
                     train_ins = [self.X_train, self.y]
                     test_ins = [self.X_test, self.y]
                 else:
@@ -543,19 +543,18 @@ class Sequential(Model, containers.Sequential):
 
             predict_ins = [self.X_test]
 
-        self._train = K.function(train_ins, [train_loss], updates=updates)
-        self._predict = K.function(predict_ins, [self.y_test], updates=self.state_updates)
-        self._test = K.function(test_ins, [test_loss], updates=self.state_updates)
+        self._train = theano.function(train_ins, [train_loss], updates=updates)
+        self._predict = theano.function(predict_ins, [self.y_test], updates=self.state_updates)
+        self._test = theano.function(test_ins, [test_loss], updates=self.state_updates)
 
         if self.class_mode == 'ctc':
             self._train_with_acc = theano.function(train_ins, [train_loss, train_accuracy, train_TE, train_TD], updates=updates,
                                                    allow_input_downcast=True)
             self._test_with_acc = theano.function(test_ins, [test_loss, test_accuracy, test_TE, test_TD],
                                                   allow_input_downcast=True)
-            self._batch_train_with_acc = theano.function(inputs=train_ins,
-                                                    outputs=[train_loss, train_accuracy, train_TE, train_TD, self.resultseq, self.resultseq_mask, self.y_train],
-                                                         updates=updates,
-                                                         allow_input_downcast=True)
+            self._train_with_acc_verbose = theano.function(inputs=train_ins,
+                                                           outputs=[train_loss, train_accuracy, train_TE, train_TD, self.resultseq, self.resultseq_mask, self.y_train],
+                                                           updates=updates, allow_input_downcast=True)
                                                          # on_unused_input='ignore')
         else:
             self._train_with_acc = K.function(train_ins, [train_loss, train_accuracy], updates=updates)
@@ -781,7 +780,7 @@ class Sequential(Model, containers.Sequential):
         else:
             return outs[0]
 
-    def train_on_batch(self, X, y, X_mask=None, y_mask=None, accuracy=False, class_weight=None, sample_weight=None):
+    def train_on_batch(self, X, y, X_mask=None, y_mask=None, accuracy=False, class_weight=None, sample_weight=None, verbose=False):
         '''Single gradient update over one batch of samples.
 
         Returns the loss over the data,
@@ -817,8 +816,11 @@ class Sequential(Model, containers.Sequential):
             ins = X + [y, sample_weight]
 
         if self.class_mode == 'ctc':
-            if accuracy:
-                return self._batch_train_with_acc(*ins)
+            if accuracy is True:
+                if verbose is True:
+                    return self._train_with_acc_verbose(*ins)
+                else:
+                    return self._train_with_acc(*ins)
             else:
                 return self._train(*ins)
         else:
