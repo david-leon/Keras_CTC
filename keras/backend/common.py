@@ -1,7 +1,7 @@
 import numpy as np
 
 # the type of float to use throughout the session.
-_FLOATX = 'float32'
+_FLOATX = 'float64'
 _EPSILON = 10e-8
 
 
@@ -20,7 +20,7 @@ def floatx():
 
 def set_floatx(floatx):
     global _FLOATX
-    print(r'set_floatX= %s, @ keras\backend\common.py, Line23' % floatx)
+    # print(r'set_floatX= %s, @ keras\backend\common.py, Line23' % floatx)
     if floatx not in {'float32', 'float64'}:
         raise Exception('Unknown floatx type: ' + str(floatx))
     floatx = str(floatx)
