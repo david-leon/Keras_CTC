@@ -4,6 +4,7 @@ import os
 import json
 import sys
 from .common import epsilon, floatx, set_epsilon, set_floatx
+import theano
 
 _keras_base_dir = os.path.expanduser('~')
 if not os.access(_keras_base_dir, os.W_OK):
@@ -17,7 +18,8 @@ _BACKEND = 'theano'
 _config_path = os.path.expanduser(os.path.join(_keras_dir, 'keras.json'))
 if os.path.exists(_config_path):
     _config = json.load(open(_config_path))
-    _floatx = _config.get('floatx', floatx())
+    #_floatx = _config.get('floatx', floatx())
+    _floatx = theano.config.floatX
     assert _floatx in {'float32', 'float64'}
     _epsilon = _config.get('epsilon', epsilon())
     assert type(_epsilon) == float
