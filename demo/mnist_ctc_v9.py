@@ -45,8 +45,8 @@ def build_model(feadim, Nclass, loss='ctc_cost_for_train', optimizer='Adadelta')
 def build_model_2(feadim, Nclass, loss='ctc_cost_for_train', optimizer='Adadelta', border_mode='same'):
     """
     Input shape: X.shape=(B, 1, rows, cols), GT.shape=(B, L)
-    :param feadim:
-    :param Nclass:
+    :param feadim: input feature dimension
+    :param Nclass: class number
     :param loss:
     :param optimizer:
     :return:

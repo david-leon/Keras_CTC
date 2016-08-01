@@ -38,7 +38,7 @@ To use CTC cost objective, set **loss = 'ctc_cost_for_train'** or **'ctc_cost_pr
 To use another train/test/predict function besides the 'default' one, just need to specify its 'name' parameter. Now we can build multi-task/multi-modal networks!
 
 ------------------
-## Usage Guide (uncompleted)
+## Usage Guide (draft)
 You can walk through all the added features of Keras-MOD with a toy demo, check '/ctc_demo/mnist_ctc_v9.py' for details.   
 The toy demo uses mnist dataset to simulate digit sequence images, and use FCN + LSTM to recognize the digit texts.
 ```python
@@ -65,8 +65,8 @@ The latter one build on the other hand a complicated model with upto 7 CNN layer
 def build_model_2(feadim, Nclass, loss='ctc_cost_for_train', optimizer='Adadelta', border_mode='same'):
     """
     Input shape: X.shape=(B, 1, rows, cols), GT.shape=(B, L)
-    :param feadim:
-    :param Nclass:
+    :param feadim: input feature dimension
+    :param Nclass: class number
     :param loss:
     :param optimizer:
     :return:
@@ -111,7 +111,8 @@ From the above two models you now can see how
   * 2) End-to-end artecture of FCN + RNN
   * 3) bi-directional RNN    
     
-can be built with Keras-MOD.     
+can be built with Keras-MOD. 
+
  
 ------------------
 ### Why not pull request for Keras master branch?
