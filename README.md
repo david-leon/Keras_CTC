@@ -1,5 +1,5 @@
 # Keras MOD
-[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/daweileng/keras_MOD/blob/MOD_1.0.4/LICENSE)  
+[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/daweileng/keras_MOD/blob/master/LICENSE)  
 A modified fork of Keras, with base version 1.0.6  
 
 ------------------
