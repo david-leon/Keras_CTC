@@ -60,8 +60,7 @@ class CallbackList(object):
             callback.on_batch_end(batch, logs)
         self._delta_ts_batch_end.append(time.time() - t_before_callbacks)
         delta_t_median = np.median(self._delta_ts_batch_end)
-        if self._delta_t_batch > 0. and delta_t_median > 0.95 * \
-           self._delta_t_batch and delta_t_median > 0.1:
+        if self._delta_t_batch > 0. and (delta_t_median > 0.95 * self._delta_t_batch and delta_t_median > 0.1):
             warnings.warn('Method on_batch_end() is slow compared '
                           'to the batch update (%f). Check your callbacks.'
                           % delta_t_median)
@@ -193,7 +192,7 @@ class ProgbarLogger(Callback):
             if k in logs:
                 self.log_values.append((k, logs[k]))
         if self.verbose:
-            self.progbar.update(self.seen, self.log_values)
+            self.progbar.update(self.seen, self.log_values, force=True)
 
 
 class History(Callback):
@@ -211,9 +210,7 @@ class History(Callback):
     def on_epoch_end(self, epoch, logs={}):
         self.epoch.append(epoch)
         for k, v in logs.items():
-            if k not in self.history:
-                self.history[k] = []
-            self.history[k].append(v)
+            self.history.setdefault(k, []).append(v)
 
 
 class ModelCheckpoint(Callback):
@@ -247,7 +244,7 @@ class ModelCheckpoint(Callback):
     def __init__(self, filepath, monitor='val_loss', verbose=0,
                  save_best_only=False, mode='auto'):
 
-        super(Callback, self).__init__()
+        super(ModelCheckpoint, self).__init__()
         self.monitor = monitor
         self.verbose = verbose
         self.filepath = filepath
@@ -314,7 +311,7 @@ class EarlyStopping(Callback):
             monitored has stopped increasing.
     '''
     def __init__(self, monitor='val_loss', patience=0, verbose=0, mode='auto'):
-        super(Callback, self).__init__()
+        super(EarlyStopping, self).__init__()
 
         self.monitor = monitor
         self.patience = patience
@@ -323,22 +320,23 @@ class EarlyStopping(Callback):
 
         if mode not in ['auto', 'min', 'max']:
             warnings.warn('EarlyStopping mode %s is unknown, '
-                          'fallback to auto mode.' % (self.mode), RuntimeWarning)
+                          'fallback to auto mode.' % (self.mode),
+                          RuntimeWarning)
             mode = 'auto'
 
         if mode == 'min':
             self.monitor_op = np.less
-            self.best = np.Inf
         elif mode == 'max':
             self.monitor_op = np.greater
-            self.best = -np.Inf
         else:
             if 'acc' in self.monitor:
                 self.monitor_op = np.greater
-                self.best = -np.Inf
             else:
                 self.monitor_op = np.less
-                self.best = np.Inf
+
+    def on_train_begin(self, logs={}):
+        self.wait = 0       # Allow instances to be re-used
+        self.best = np.Inf if self.monitor_op == np.less else -np.Inf
 
     def on_epoch_end(self, epoch, logs={}):
         current = logs.get(self.monitor)
@@ -365,12 +363,19 @@ class RemoteMonitor(Callback):
     # Arguments
         root: root url to which the events will be sent (at the end
             of every epoch). Events are sent to
-            `root + '/publish/epoch/end/'`. Calls are HTTP POST,
-            with a `data` argument which is a JSON-encoded dictionary
-            of event data.
+            `root + '/publish/epoch/end/'` by default. Calls are
+            HTTP POST, with a `data` argument which is a
+            JSON-encoded dictionary of event data.
     '''
-    def __init__(self, root='http://localhost:9000'):
+
+    def __init__(self,
+                 root='http://localhost:9000',
+                 path='/publish/epoch/end/',
+                 field='data'):
+        super(RemoteMonitor, self).__init__()
         self.root = root
+        self.path = path
+        self.field = field
 
     def on_epoch_end(self, epoch, logs={}):
         import requests
@@ -378,10 +383,9 @@ class RemoteMonitor(Callback):
         send['epoch'] = epoch
         for k, v in logs.items():
             send[k] = v
-
         try:
-            requests.post(self.root + '/publish/epoch/end/',
-                          {'data': json.dumps(send)})
+            requests.post(self.root + self.path,
+                          {self.field: json.dumps(send)})
         except:
             print('Warning: could not reach RemoteMonitor '
                   'root server at ' + str(self.root))
@@ -427,59 +431,67 @@ class TensorBoard(Callback):
 
     # Arguments
         log_dir: the path of the directory where to save the log
-            files to be parsed by tensorboard
+            files to be parsed by Tensorboard
         histogram_freq: frequency (in epochs) at which to compute activation
             histograms for the layers of the model. If set to 0,
             histograms won't be computed.
+        write_graph: whether to visualize the graph in Tensorboard.
+            The log file can become quite large when
+            write_graph is set to True.
     '''
-    def __init__(self, log_dir='./logs', histogram_freq=0):
-        super(Callback, self).__init__()
+
+    def __init__(self, log_dir='./logs', histogram_freq=0, write_graph=True):
+        super(TensorBoard, self).__init__()
         if K._BACKEND != 'tensorflow':
             raise Exception('TensorBoard callback only works '
                             'with the TensorFlow backend.')
         self.log_dir = log_dir
         self.histogram_freq = histogram_freq
         self.merged = None
+        self.write_graph = write_graph
 
     def _set_model(self, model):
         import tensorflow as tf
         import keras.backend.tensorflow_backend as KTF
 
         self.model = model
-        self.sess = KTF._get_session()
-        if self.histogram_freq and not self.merged:
-            mod_type = self.model.get_config()['name']
-            if mod_type == 'Sequential':
-                layers = {l.get_config()['name']: l for l in self.model.layers}
-            elif mod_type == 'Graph':
-                layers = self.model.nodes
-            else:
-                raise Exception('Unrecognized model:',
-                                self.model.get_config()['name'])
-            for l in layers:
-                cur_layer = layers[l]
-                if hasattr(cur_layer, 'W'):
-                    tf.histogram_summary('{}_W'.format(l), cur_layer.W)
-                if hasattr(cur_layer, 'b'):
-                    tf.histogram_summary('{}_b'.format(l), cur_layer.b)
-                if hasattr(cur_layer, 'get_output'):
-                    tf.histogram_summary('{}_out'.format(l),
-                                         cur_layer.get_output())
+        self.sess = KTF.get_session()
+        if self.histogram_freq and self.merged is None:
+            layers = self.model.layers
+            for layer in layers:
+                if hasattr(layer, 'W'):
+                    tf.histogram_summary('{}_W'.format(layer), layer.W)
+                if hasattr(layer, 'b'):
+                    tf.histogram_summary('{}_b'.format(layer), layer.b)
+                if hasattr(layer, 'output'):
+                    tf.histogram_summary('{}_out'.format(layer),
+                                         layer.output)
         self.merged = tf.merge_all_summaries()
-        self.writer = tf.train.SummaryWriter(self.log_dir,
-                                             self.sess.graph_def)
+        if self.write_graph:
+            if tf.__version__ >= '0.8.0':
+                self.writer = tf.train.SummaryWriter(self.log_dir,
+                                                     self.sess.graph)
+            else:
+                self.writer = tf.train.SummaryWriter(self.log_dir,
+                                                     self.sess.graph_def)
+        else:
+            self.writer = tf.train.SummaryWriter(self.log_dir)
 
     def on_epoch_end(self, epoch, logs={}):
         import tensorflow as tf
 
         if self.model.validation_data and self.histogram_freq:
             if epoch % self.histogram_freq == 0:
-                if self.params.get('show_accuracy'):
-                    test_function = self.model._test_with_acc
+                # TODO: implement batched calls to sess.run
+                # (current call will likely go OOM on GPU)
+                if self.model.uses_learning_phase:
+                    cut_v_data = len(self.model.inputs)
+                    val_data = self.model.validation_data[:cut_v_data] + [0]
+                    tensors = self.model.inputs + [K.learning_phase()]
                 else:
-                    test_function = self.model._test
-                names = [v.name for v in test_function.inputs]
-                feed_dict = dict(zip(names, self.model.validation_data))
+                    val_data = self.model.validation_data
+                    tensors = self.model.inputs
+                feed_dict = dict(zip(tensors, val_data))
                 result = self.sess.run([self.merged], feed_dict=feed_dict)
                 summary_str = result[0]
                 self.writer.add_summary(summary_str, epoch)

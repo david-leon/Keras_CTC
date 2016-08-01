@@ -3,18 +3,17 @@ from setuptools import find_packages
 
 
 setup(name='Keras',
-      version='0.3.2',
+      version='1.0.6',
       description='Deep Learning for Python',
       author='Francois Chollet',
       author_email='francois.chollet@gmail.com',
       url='https://github.com/fchollet/keras',
-      download_url='https://github.com/fchollet/keras/tarball/0.3.2',
+      download_url='https://github.com/fchollet/keras/tarball/1.0.6',
       license='MIT',
       install_requires=['theano', 'pyyaml', 'six'],
       extras_require={
           'h5py': ['h5py'],
       },
-      packages=find_packages(),
-      modified='David Leon',
-      include_package_data=True,
-      zip_safe=False)
+      MOD_author='David Leon (Dawei Leng)',
+      zip_safe=False,
+      packages=find_packages())

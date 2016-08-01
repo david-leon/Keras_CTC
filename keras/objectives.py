@@ -36,8 +36,22 @@ def categorical_crossentropy(y_true, y_pred):
     return K.categorical_crossentropy(y_pred, y_true)
 
 
+def sparse_categorical_crossentropy(y_true, y_pred):
+    '''expects an array of integer classes.
+    Note: labels shape must have the same number of dimensions as output shape.
+    If you get a shape error, add a length-1 dimension to labels.
+    '''
+    return K.sparse_categorical_crossentropy(y_pred, y_true)
+
+
 def binary_crossentropy(y_true, y_pred):
     return K.mean(K.binary_crossentropy(y_pred, y_true), axis=-1)
+
+
+def kullback_leibler_divergence(y_true, y_pred):
+    y_true = K.clip(y_true, K.epsilon(), 1)
+    y_pred = K.clip(y_pred, K.epsilon(), 1)
+    return K.sum(y_true * K.log(y_true / y_pred), axis=-1)
 
 
 def poisson(y_true, y_pred):
@@ -55,6 +69,7 @@ mse = MSE = mean_squared_error
 mae = MAE = mean_absolute_error
 mape = MAPE = mean_absolute_percentage_error
 msle = MSLE = mean_squared_logarithmic_error
+kld = KLD = kullback_leibler_divergence
 cosine = cosine_proximity
 
 from .utils.generic_utils import get_from_module
@@ -62,7 +77,7 @@ def get(identifier):
     return get_from_module(identifier, globals(), 'objective')
 
 #------------------------------     for CTC cost      -------------------------------------------------#
-from ctc_theano import CTC_precise, CTC_for_train
+from .ctc_theano import CTC_precise, CTC_for_train
 import theano.tensor as tensor
 
 def ctc_cost_precise(seq, sm, seq_mask=None, sm_mask=None):
@@ -100,7 +115,7 @@ def ctc_cost_for_train(seq, sm, seq_mask=None, sm_mask=None):
     :param blank_symbol: scalar
     :return: negative log likelihood averaged over a batch
     """
-    queryseq = seq.T
+    queryseq = tensor.addbroadcast(seq.T)
     scorematrix = sm.dimshuffle(1, 2, 0)
     if seq_mask is None:
         queryseq_mask = None
@@ -125,3 +140,7 @@ def ctc_decode(y_hat, y_hat_mask=None):
 
 def ctc_CER(resultseq, targetseq, resultseq_mask=None, targetseq_mask=None):
     return CTC_precise.calc_CER(resultseq, targetseq.T, resultseq_mask, targetseq_mask)
+
+if __name__ == '__main__':
+    fn = get('ctc_cost_for_train')
+    print(fn)

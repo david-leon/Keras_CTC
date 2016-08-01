@@ -2,13 +2,14 @@ from __future__ import print_function
 import numpy as np
 import pytest
 
-from keras.utils.test_utils import get_test_data
+from keras.utils.test_utils import get_test_data, keras_test
 from keras.models import Sequential
 from keras.layers.core import Dense, Flatten, Activation
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.utils.np_utils import to_categorical
 
 
+@keras_test
 def test_image_classification():
     '''
     Classify random 16x16 color images into several classes using logistic regression
@@ -35,10 +36,12 @@ def test_image_classification():
         Activation('relu'),
         Dense(y_test.shape[-1], activation='softmax')
     ])
-    model.compile(loss='categorical_crossentropy', optimizer='sgd')
+    model.compile(loss='categorical_crossentropy',
+                  optimizer='rmsprop',
+                  metrics=['accuracy'])
     history = model.fit(X_train, y_train, nb_epoch=10, batch_size=16,
                         validation_data=(X_test, y_test),
-                        show_accuracy=True, verbose=0)
+                        verbose=0)
     assert(history.history['val_acc'][-1] > 0.85)
 
 

@@ -2,14 +2,16 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose
 
+from keras.utils.test_utils import layer_test
 from keras.layers import recurrent, embeddings
 from keras.models import Sequential
 from keras.layers.core import Masking
+from keras import regularizers
+from keras.utils.test_utils import keras_test
 
 from keras import backend as K
-from keras.models import Sequential, model_from_json
 
-nb_samples, timesteps, embedding_dim, output_dim = 3, 5, 10, 5
+nb_samples, timesteps, embedding_dim, output_dim = 2, 5, 4, 3
 embedding_num = 12
 
 
@@ -18,39 +20,25 @@ def _runner(layer_class):
     All the recurrent layers share the same interface,
     so we can run through them with a single function.
     """
-    for ret_seq in [True, False]:
-        layer = layer_class(output_dim, return_sequences=ret_seq,
-                            weights=None, input_shape=(timesteps, embedding_dim))
-        layer.input = K.variable(np.ones((nb_samples, timesteps, embedding_dim)))
-        layer.get_config()
-
-        for train in [True, False]:
-            out = K.eval(layer.get_output(train))
-            # Make sure the output has the desired shape
-            if ret_seq:
-                assert(out.shape == (nb_samples, timesteps, output_dim))
-            else:
-                assert(out.shape == (nb_samples, output_dim))
-
-            mask = layer.get_output_mask(train)
+    # check return_sequences
+    layer_test(layer_class,
+               kwargs={'output_dim': output_dim,
+                       'return_sequences': True},
+               input_shape=(nb_samples, timesteps, embedding_dim))
 
     # check dropout
-    for ret_seq in [True, False]:
-        layer = layer_class(output_dim, return_sequences=ret_seq, weights=None, 
-                            batch_input_shape=(nb_samples, timesteps, embedding_dim),
-                            dropout_W=0.5, dropout_U=0.5)
-        layer.input = K.variable(np.ones((nb_samples, timesteps, embedding_dim)))
-        layer.get_config()
+    layer_test(layer_class,
+               kwargs={'output_dim': output_dim,
+                       'dropout_U': 0.1,
+                       'dropout_W': 0.1},
+               input_shape=(nb_samples, timesteps, embedding_dim))
 
-        for train in [True, False]:
-            out = K.eval(layer.get_output(train))
-            # Make sure the output has the desired shape
-            if ret_seq:
-                assert(out.shape == (nb_samples, timesteps, output_dim))
-            else:
-                assert(out.shape == (nb_samples, output_dim))
-
-            mask = layer.get_output_mask(train)
+    # check implementation modes
+    for mode in ['cpu', 'mem', 'gpu']:
+        layer_test(layer_class,
+                   kwargs={'output_dim': output_dim,
+                           'consume_less': mode},
+                   input_shape=(nb_samples, timesteps, embedding_dim))
 
     # check statefulness
     model = Sequential()
@@ -95,7 +83,6 @@ def _runner(layer_class):
     left_padded_input = np.ones((nb_samples, timesteps))
     left_padded_input[0, :1] = 0
     left_padded_input[1, :2] = 0
-    left_padded_input[2, :3] = 0
     out6 = model.predict(left_padded_input)
 
     layer.reset_states()
@@ -103,35 +90,38 @@ def _runner(layer_class):
     right_padded_input = np.ones((nb_samples, timesteps))
     right_padded_input[0, -1:] = 0
     right_padded_input[1, -2:] = 0
-    right_padded_input[2, -3:] = 0
     out7 = model.predict(right_padded_input)
 
     assert_allclose(out7, out6, atol=1e-5)
 
+    # check regularizers
+    layer = layer_class(output_dim, return_sequences=False, weights=None,
+                        batch_input_shape=(nb_samples, timesteps, embedding_dim),
+                        W_regularizer=regularizers.WeightRegularizer(l1=0.01),
+                        U_regularizer=regularizers.WeightRegularizer(l1=0.01),
+                        b_regularizer='l2')
+    shape = (nb_samples, timesteps, embedding_dim)
+    layer.set_input(K.variable(np.ones(shape)),
+                    shape=shape)
+    K.eval(layer.output)
 
+
+@keras_test
 def test_SimpleRNN():
     _runner(recurrent.SimpleRNN)
 
 
+@keras_test
 def test_GRU():
     _runner(recurrent.GRU)
 
 
+@keras_test
 def test_LSTM():
     _runner(recurrent.LSTM)
 
 
-def test_batch_input_shape_serialization():
-    model = Sequential()
-    model.add(embeddings.Embedding(2, 2,
-                                   mask_zero=True,
-                                   input_length=2,
-                                   batch_input_shape=(2, 2)))
-    json_data = model.to_json()
-    reconstructed_model = model_from_json(json_data)
-    assert(reconstructed_model.input_shape == (2, 2))
-
-
+@keras_test
 def test_masking_layer():
     ''' This test based on a previously failing issue here:
     https://github.com/fchollet/keras/issues/1567

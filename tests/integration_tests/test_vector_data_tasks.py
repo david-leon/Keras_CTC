@@ -2,12 +2,13 @@ from __future__ import print_function
 import numpy as np
 import pytest
 
-from keras.utils.test_utils import get_test_data
+from keras.utils.test_utils import get_test_data, keras_test
 from keras.models import Sequential
 from keras.layers.core import Dense
 from keras.utils.np_utils import to_categorical
 
 
+@keras_test
 def test_vector_classification():
     '''
     Classify random float vectors into 2 classes with logistic regression
@@ -28,13 +29,16 @@ def test_vector_classification():
         Dense(nb_hidden, input_shape=(X_train.shape[-1],), activation='relu'),
         Dense(y_train.shape[-1], activation='softmax')
     ])
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
+    model.compile(loss='categorical_crossentropy',
+                  optimizer='rmsprop',
+                  metrics=['accuracy'])
     history = model.fit(X_train, y_train, nb_epoch=15, batch_size=16,
                         validation_data=(X_test, y_test),
-                        show_accuracy=True, verbose=0)
+                        verbose=0)
     assert(history.history['val_acc'][-1] > 0.8)
 
 
+@keras_test
 def test_vector_regression():
     '''
     Perform float data prediction (regression) using 2 layer MLP
