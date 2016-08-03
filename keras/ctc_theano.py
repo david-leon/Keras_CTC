@@ -1,6 +1,6 @@
 # coding:utf-8
 __author__ = 'dawei.leng'
-__version__ = '1.44'
+__version__ = '1.46'
 """
 ------------------------------------------------------------------------------------------------------------------------
  Another CTC implemented in theano.
@@ -36,7 +36,7 @@ __version__ = '1.44'
  this CTC theano implementation.
 
  Created   :  12, 10, 2015
- Revised   :   2,  3, 2016
+ Revised   :   8,  3, 2016
  Reference :  [1] Alex Graves, etc., Connectionist temporal classification: labelling unsegmented sequence data with
                   recurrent neural networks, ICML, 2006
               [2] Alex Graves, Supervised sequence labelling with recurrent neural networks, 2014
@@ -58,7 +58,7 @@ CTC_precise class results in lower residual error, thus should be more suitable 
     * Smaller batch size is more preferable for training, if batch size > 50, the training process may fail to converge due to gradient
 averaging;
     * Adadelta/RMSProp are better than SGD in most cases;
-    * 'tanh' is a better choise of the output activation of LSTM.
+    * 'tanh' is a better choice of the output activation of LSTM.
 """
 import theano
 from theano import tensor
@@ -90,7 +90,8 @@ class CTC_precise(object):
         :return: negative log likelihood averaged over a batch
         """
         if blank_symbol is None:
-            blank_symbol = scorematrix.shape[1] - 1
+            # blank_symbol = scorematrix.shape[1] - 1
+            blank_symbol = tensor.cast(scorematrix.shape[1], floatX) - 1.0
         queryseq_padded, queryseq_mask_padded = self._pad_blanks(queryseq, blank_symbol, queryseq_mask)
         results = self.path_probability(queryseq_padded, scorematrix, queryseq_mask_padded, scorematrix_mask, blank_symbol)
         NLL = -results[1][-1]                                             # negative log likelihood
@@ -114,7 +115,8 @@ class CTC_precise(object):
         :return:
         """
         if blank_symbol is None:
-            blank_symbol = scorematrix.shape[1] - 1
+            # blank_symbol = scorematrix.shape[1] - 1
+            blank_symbol = tensor.cast(scorematrix.shape[1], floatX) - 1.0
         if queryseq_mask_padded is None:
                     queryseq_mask_padded = tensor.ones_like(queryseq_padded, dtype=floatX)
 
@@ -161,8 +163,8 @@ class CTC_precise(object):
                 non_sequences=[r2, r3, queryseq_mask_padded])
         return results
 
-    @classmethod
-    def best_path_decode(self, scorematrix, scorematrix_mask=None, blank_symbol=None):
+    @staticmethod
+    def best_path_decode(scorematrix, scorematrix_mask=None, blank_symbol=None):
         """
         Computes the best path by simply choosing most likely label at each timestep
         :param scorematrix: (T, C+1, B)
@@ -175,7 +177,8 @@ class CTC_precise(object):
         T, Cp, B = scorematrix.shape
         resultseq, resultseq_mask = tensor.zeros([T, B], dtype=scorematrix.dtype)-1, tensor.zeros([T, B], dtype=scorematrix.dtype)
         if blank_symbol is None:
-            blank_symbol = Cp - 1
+            # blank_symbol = Cp - 1.0
+            blank_symbol = tensor.cast(Cp, floatX) - 1.0
         if scorematrix_mask is None:
             scorematrix_mask = tensor.ones([T, B], dtype=scorematrix.dtype)
 
@@ -197,8 +200,8 @@ class CTC_precise(object):
         resultseq, resultseq_mask = outputs[1][-1], outputs[2][-1]
         return resultseq, resultseq_mask
 
-    @classmethod
-    def calc_CER(self, resultseq, targetseq, resultseq_mask=None, targetseq_mask=None):
+    @staticmethod
+    def calc_CER(resultseq, targetseq, resultseq_mask=None, targetseq_mask=None):
         """
         Calculate the character error rate (CER) given ground truth 'targetseq' and CTC decoding output 'resultseq'
         :param resultseq (T1,  B)
@@ -280,7 +283,7 @@ class CTC_precise(object):
         Pad queryseq and corresponding queryseq_mask with blank symbol
         :param queryseq  (L, B)
         :param queryseq_mask (L, B)
-        :param blank_symbol  scalar
+        :param blank_symbol  scalar, must be float type!
         :return queryseq_padded, queryseq_mask_padded, both with shape (2L+1, B)
         """
         # for queryseq
@@ -360,7 +363,8 @@ class CTC_for_train(CTC_precise):
         """
         print('CTC_for_train.cost is used')
         if blank_symbol is None:
-            blank_symbol = scorematrix.shape[1] - 1
+            # blank_symbol = scorematrix.shape[1] - 1.0
+            blank_symbol = tensor.cast(scorematrix.shape[1], floatX) - 1.0
         queryseq_padded, queryseq_mask_padded = self._pad_blanks(queryseq, blank_symbol, queryseq_mask)
         NLL, alphas = self.path_probability(queryseq_padded, scorematrix, queryseq_mask_padded, scorematrix_mask, blank_symbol)
         NLL_avg = tensor.mean(NLL)
@@ -378,7 +382,8 @@ class CTC_for_train(CTC_precise):
         :return:
         """
         if blank_symbol is None:
-            blank_symbol = scorematrix.shape[1] - 1
+            # blank_symbol = scorematrix.shape[1] - 1.0
+            blank_symbol = tensor.cast(scorematrix.shape[1], floatX) - 1.0
         if queryseq_mask_padded is None:
             queryseq_mask_padded = tensor.ones_like(queryseq_padded, dtype=floatX)
         if scorematrix_mask is None:
