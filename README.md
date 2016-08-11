@@ -7,7 +7,7 @@ A modified fork of Keras, with base version 1.0.6
 The modifications are mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/daweileng/Precise-CTC] into Keras. This feature has been missing by Keras for quite a long time.
 
 ------------------
-## Functions
+## Features
 [1] Till now, the following train/test functions work well with CTC cost:
   * **train_on_batch()**
   * **test_on_batch()**
@@ -17,15 +17,15 @@ The modification of '**fit()**' function is in progress, but no definte schedule
 
 To use CTC cost objective, set **loss = 'ctc_cost_for_train'** or **'ctc_cost_precise'** when compiling model.
 
-[2] For now, only '**loss**' metric works with CTC cost. For accuracy evaluation, you need to do the decoding and calculate the CER outside Keras.
+[2] For now, only **loss** metric works with CTC cost. For accuracy evaluation, you need to do the decoding and calculate the CER outside Keras.
 
-[3] '**Flatten**' class is modified to work with FCN (*Fully Convolutional Network*)
+[3] **Flatten** class is modified to work with FCN (*Fully Convolutional Network*)
 
-[4] '**Permute**' class is modified to work with FCRN (*Fully Convolutional Recurrent Network*)
+[4] **Permute** class is modified to work with FCRN (*Fully Convolutional Recurrent Network*)
 
-[5] '**conv2d**'  class is modified to work with 'same' and 'full' mode
+[5] **conv2d**  class is modified to work with 'same' and 'full' mode
 
-[6] '**Recurrent**' class is modified to work with bidirectional RNN
+[6] **Recurrent** class is modified to work with bidirectional RNN
 
 [7] Add support for multiple train/test/predict functions for 
   * **fit()** 
@@ -37,10 +37,14 @@ To use CTC cost objective, set **loss = 'ctc_cost_for_train'** or **'ctc_cost_pr
   
 To use another train/test/predict function besides the 'default' one, just need to specify its 'name' parameter. Now we can build multi-task/multi-modal networks!
 
+[8] **Convolution2D** class is modified to support recursive convolution (use `recur=n` for n-times convolution recursion)
+
 ------------------
 ## Usage Guide (draft)
-You can walk through all the added features of Keras-MOD with a toy demo, check '/ctc_demo/mnist_ctc_v9.py' for details.   
-The toy demo uses mnist dataset to simulate digit sequence images, and use FCN + LSTM to recognize the digit texts.
+This guide will walk you through nearly all the features added in Keras-MOD with a toy demo. The toy demo uses MNIST dataset to simulate digit sequence images. To recognize the digit text sequence, an E2E (end-to-end) system is built with architecture of RNN on top of FCN. The E2E system leverages the power of CNN to fulfill the task of automatic feature extraction, and the power of LSTM-RNN to fulfill the task of sequence recognition. This E2E system features:  
+* Seamless integration of CNN and RNN, providing the capability for simultaneous optimaization
+* Support for variational length input, more natural for sequence data processing
+
 ```python
 minNcharPerseq, maxNcharPerseq= 4, 6
 print('Concatenating images')
@@ -120,4 +124,4 @@ Question may be asked why not make a pull request for fchollet's Keras repositor
 
 One reason is that CTC cost is rather different from the existing objective functions in Keras, it requires different masking mechanism and not directly reflects accuracy. To avoid mass modification of Keras' current masking mechanism, I override Keras' '**sample_weights**' variable for '**seq_mask**' of CTC and Keras' '**masks**' variable for '**sm_mask**' of CTC. This should not cause problem for other network architecture or objective functions, but I lack resources to give it a thorough test.
 
-The other reason is that for now I only care about Theano implementations. So the modifications are targetted only on Theano backend.
+The other reason is that for now I only care about Theano implementations. So the modifications are targetted only for Theano backend.

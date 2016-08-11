@@ -284,6 +284,11 @@ class Convolution2D(Layer):
         self.initial_weights = weights
         super(Convolution2D, self).__init__(**kwargs)
 
+        if 'recur' in kwargs:                    # [DV] add for support for recursive convolution
+            self.recur = kwargs['recur']
+        else:
+            self.recur = 0
+
     def build(self, input_shape):
         if self.dim_ordering == 'th':
             stack_size = input_shape[1]
@@ -350,6 +355,13 @@ class Convolution2D(Layer):
                           border_mode=self.border_mode,
                           dim_ordering=self.dim_ordering,
                           filter_shape=self.W_shape)
+        if self.recur > 1:                                                   # [DV] add for recursive convolution, only 'same'/'half' border modes are supported for now
+            for _ in range(self.recur - 1):
+                output = K.conv2d(output, self.W, strides=self.subsample,
+                                  border_mode=self.border_mode,
+                                  dim_ordering=self.dim_ordering,
+                                  filter_shape=self.W_shape)
+
         if self.bias:
             if self.dim_ordering == 'th':
                 output += K.reshape(self.b, (1, self.nb_filter, 1, 1))
