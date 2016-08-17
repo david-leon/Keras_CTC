@@ -1294,11 +1294,10 @@ class Model(Container):
             ins = x + y + sample_weights
 
         sm_masks = []                                   # [DV] add for ctc
+        return_sm = False
         for key in kwargs:
             if key == 'return_sm':
                 return_sm = kwargs[key]
-            else:
-                return_sm = False
             if key.startswith('sm_mask'):
                 sm_masks.append(kwargs[key])
         if len(sm_masks) == 0:                          # [DV] handle default value of 'sm_mask' (B, T)
