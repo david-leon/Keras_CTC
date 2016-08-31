@@ -39,6 +39,8 @@ To use another train/test/predict function besides the 'default' one, just need 
 
 [8] **Convolution2D** class is modified to support recursive convolution (use `recur=n` for n-times convolution recursion)
 
+[9] **Merge** class is modified to support variational length input
+
 ------------------
 ## Usage Guide (draft)
 This guide will walk you through nearly all the features added in Keras-MOD with a toy demo. The toy demo uses MNIST dataset to simulate digit sequence images. To recognize the digit text sequence, an E2E (end-to-end) system is built with architecture of RNN on top of FCN. The E2E system leverages the power of CNN to fulfill the task of automatic feature extraction, and the power of LSTM-RNN to fulfill the task of sequence recognition. This E2E system features:  

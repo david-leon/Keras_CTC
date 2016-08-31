@@ -298,7 +298,8 @@ class Layer(object):
                           'name',
                           'trainable',
                           'create_input_layer',
-                          'keep_time_order'}
+                          'keep_time_order',             # [DV] support for bi-directinal RNN
+                          'ndim'}                        # [DV] support for different ndim reshape
         for kwarg in kwargs.keys():
             assert kwarg in allowed_kwargs, 'Keyword argument not understood: ' + kwarg
 
@@ -1208,10 +1209,10 @@ class Merge(Layer):
             for i in range(len(reduced_inputs_shapes)):
                 del reduced_inputs_shapes[i][self.concat_axis]
                 shape_set.add(tuple(reduced_inputs_shapes[i]))
-            if len(shape_set) > 1:
-                raise Exception('"concat" mode can only merge layers with matching ' +
-                                'output shapes except for the concat axis. ' +
-                                'Layer shapes: %s' % (input_shapes))
+            # if len(shape_set) > 1:                                                          # [DV] comment out for support of variational length data
+            #     raise Exception('"concat" mode can only merge layers with matching ' +
+            #                     'output shapes except for the concat axis. ' +
+            #                     'Layer shapes: %s' % (input_shapes))
 
     def call(self, inputs, mask=None):
         if type(inputs) is not list or len(inputs) <= 1:
