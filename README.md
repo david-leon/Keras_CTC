@@ -14,19 +14,18 @@ What you should mind is that currently all the modifications are based on Theano
   * **test_on_batch()**
   * **predict_on_batch()**
 
-The modification of '**fit()**' function is in progress, but no definte schedule, since it's rarely used by me.
-
+The modification of '**fit()**' function is in progress, but no definte schedule, since it's rarely used by me.  
 To use CTC cost objective, set **loss = 'ctc_cost_for_train'** or **'ctc_cost_precise'** when compiling model.
 
 [2] For now, only **loss** metric works with CTC cost. For accuracy evaluation, you need to do the decoding and calculate the CER outside Keras.
 
-[3] **Flatten** class is modified to work with FCN (*Fully Convolutional Network*)
+[3] **Flatten** class is modified to work with FCN (*Fully Convolutional Network*).
 
-[4] **Permute** class is modified to work with FCRN (*Fully Convolutional Recurrent Network*)
+[4] **Permute** class is modified to work with FCRN (*Fully Convolutional Recurrent Network*).
 
-[5] **conv2d**  class is modified to work with 'same' and 'full' mode
+[5] **conv2d**  class is modified to work with 'same' and 'full' mode.
 
-[6] **Recurrent** class is modified to work with bidirectional RNN
+[6] **Recurrent** class is modified to work with bidirectional RNN.
 
 [7] Add support for multiple train/test/predict functions for 
   * **fit()** 
@@ -36,11 +35,11 @@ To use CTC cost objective, set **loss = 'ctc_cost_for_train'** or **'ctc_cost_pr
   * **test_on_batch()**
   * **predict_on_batch()**  
   
-To use another train/test/predict function besides the 'default' one, just need to specify its 'name' parameter. Now we can build multi-task/multi-modal networks!
+To use another train/test/predict function besides the 'default' one, just need to specify its 'name' parameter. Now we can build multi-task/multi-modal networks in another way.
 
-[8] **Convolution2D** class is modified to support recursive convolution (use `recur=n` for n-times convolution recursion)
+[8] **Convolution2D** class is modified to support recursive convolution (use `recur=n` for n-times convolution recursion).
 
-[9] **Merge** class is modified to support variational length input
+[9] **Merge** class is modified to support variational length input.
 
 [10] **SpatialTransformer** layer is introduced, alpha version.
 
