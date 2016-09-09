@@ -4,8 +4,9 @@ A modified fork of Keras, with base version 1.0.6
 
 ------------------
 ## Purpose  
-This MOD was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/daweileng/Precise-CTC] into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.
+This MOD was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/daweileng/Precise-CTC] into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
 What you should mind is that currently all the modifications are based on Theano backend, they are not tested or unavaible at all for Tensorflow backend.
+
 ------------------
 ## Features
 [1] Till now, the following train/test functions work well with CTC cost:
@@ -108,8 +109,8 @@ def build_BLSTM_layer(inputdim, outputdim, return_sequences=True, activation='ta
     net_input     = Input(shape=(None, inputdim))
     forward_lstm  = LSTM(output_dim=outputdim, return_sequences=return_sequences, activation=activation)(net_input)
     backward_lstm = LSTM(output_dim=outputdim, return_sequences=return_sequences, activation=activation, go_backwards=True, keep_time_order=False)(net_input)
-    net_output = Merge(mode='concat')([forward_lstm, backward_lstm])
-    BLSTM = Model(net_input, net_output)
+    net_output    = Merge(mode='concat')([forward_lstm, backward_lstm])
+    BLSTM         = Model(net_input, net_output)
     return BLSTM
 ``` 
 and replace the LSTM layer in **build_model** and **build_model_2**.
