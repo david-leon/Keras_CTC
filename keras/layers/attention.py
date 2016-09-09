@@ -7,26 +7,6 @@
 # ** Only for theano backend **
 #------------------------------------------------------------------------------------------------
 
-"""
-This implementation uses partial code from Seya/Eder Santana, the following is his copyright license:
------------------------------------------------------------------------------------------------
-Copyright (c) 2015, Eder Santana
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-
-* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-
-* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
-
-* Neither the name of Seya nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-OBS:
-This library uses code from pylearn2 which is under BSD clause-3 license.
-"""
-
 from __future__ import absolute_import
 from __future__ import division
 
@@ -49,6 +29,8 @@ class SpatialTransformer(Layer):
         example image: height= 100, width = 200
         downsample_factor = 2
         output image will then be 50, 100
+    theta_mask : matrix of shape (2,3), for masking affine tranformation matrix A_theta
+                 used for controlling the freedom of the affine transformation
 
     References
     ----------
@@ -57,8 +39,12 @@ class SpatialTransformer(Layer):
     .. [3]  https://github.com/EderSantana/seya/blob/master/seya/layers/attention.py
 
     """
-    def __init__(self, downsample_factor=1, **kwargs):
+    def __init__(self, downsample_factor=1, theta_mask=None, **kwargs):
         self.downsample_factor = downsample_factor
+        if theta_mask is not None:
+            self.theta_mask = T.cast(theta_mask, floatX)
+        else:
+            self.theta_mask = None
         super(SpatialTransformer, self).__init__(**kwargs)
 
     @property
@@ -71,7 +57,7 @@ class SpatialTransformer(Layer):
     def call(self, inputs, mask=None):
         theta, x = inputs
         theta = theta.reshape((x.shape[0], 2, 3))
-        output = self._transform(theta, x, self.downsample_factor)
+        output = self._transform(theta, x, self.downsample_factor, self.theta_mask)
         return output
 
     def __call__(self, inputs, mask=None):
@@ -110,7 +96,8 @@ class SpatialTransformer(Layer):
                 int(input_shape[1][3] / self.downsample_factor))
 
     def get_config(self):
-        config = {'downsample_factor': self.downsample_factor}
+        config = {'downsample_factor': self.downsample_factor,
+                  'theta_mask': self.theta_mask}
         base_config = super(SpatialTransformer, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
@@ -206,10 +193,11 @@ class SpatialTransformer(Layer):
         return grid
 
     @staticmethod
-    def _transform(theta, input, downsample_factor):
+    def _transform(theta, input, downsample_factor, mask=None):
         num_batch, num_channels, height, width = input.shape
         theta = theta.reshape((num_batch, 2, 3))  # T.reshape(theta, (-1, 2, 3))
-
+        if mask is not None:
+            theta = mask * theta
         # grid of (x_t, y_t, 1), eq (1) in ref [1]
         height_f = T.cast(height, floatX)
         width_f = T.cast(width, floatX)
@@ -234,3 +222,23 @@ class SpatialTransformer(Layer):
         output = output.dimshuffle(0, 3, 1, 2)
         return output
 
+
+"""
+This implementation uses partial code from Seya/Eder Santana, the following is his copyright license:
+-----------------------------------------------------------------------------------------------
+Copyright (c) 2015, Eder Santana
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+* Neither the name of Seya nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+OBS:
+This library uses code from pylearn2 which is under BSD clause-3 license.
+"""
