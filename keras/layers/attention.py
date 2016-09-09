@@ -63,7 +63,7 @@ class SpatialTransformer(Layer):
 
     @property
     def output_shape(self):
-        input_shape = self.input_shape
+        input_shape = self.input_shape[1]
         return (None, input_shape[1],
                 int(input_shape[2] / self.downsample_factor),
                 int(input_shape[3] / self.downsample_factor))
@@ -76,7 +76,7 @@ class SpatialTransformer(Layer):
 
     def __call__(self, inputs, mask=None):
         if type(inputs) is not list:
-            raise Exception('ST layer needs two inputs: (x, theta). Received: ' + str(inputs))
+            raise Exception('ST layer needs two inputs: (theta, x). Received: ' + str(inputs))
         if self.built:
             raise Exception('A ST layer cannot be used more than once')
 
@@ -99,13 +99,15 @@ class SpatialTransformer(Layer):
             self.add_inbound_node(layers, node_indices, tensor_indices)
 
             outputs = self.inbound_nodes[-1].output_tensors
-            return outputs[0]  # merge only returns a single tensor
+            return outputs[0]
         else:
             return self.call(inputs, mask)
 
     def get_output_shape_for(self, input_shape):
         assert type(input_shape) is list  # must have multiple input shape tuples
-        return input_shape[1]
+        return (input_shape[1][0], input_shape[1][1],
+                int(input_shape[1][2] / self.downsample_factor),
+                int(input_shape[1][3] / self.downsample_factor))
 
     def get_config(self):
         config = {'downsample_factor': self.downsample_factor}
@@ -221,15 +223,14 @@ class SpatialTransformer(Layer):
         x_s_flat = x_s.flatten()
         y_s_flat = y_s.flatten()
 
-        # dimshuffle input to  (bs, height, width, channels)
-        input_dim = input.dimshuffle(0, 2, 3, 1)
+        # dimshuffle input to  (batch, height, width, channels)
+        input_dimshuffled = input.dimshuffle(0, 2, 3, 1)
         input_transformed = SpatialTransformer._interpolate(
-            input_dim, x_s_flat, y_s_flat,
+            input_dimshuffled, x_s_flat, y_s_flat,
             downsample_factor)
 
         output = T.reshape(input_transformed,
                            (num_batch, out_height, out_width, num_channels))
         output = output.dimshuffle(0, 3, 1, 2)
         return output
-
 
