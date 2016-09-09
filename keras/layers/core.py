@@ -156,6 +156,9 @@ class Reshape(Layer):
     def __init__(self, target_shape, **kwargs):
         super(Reshape, self).__init__(**kwargs)
         self.target_shape = tuple(target_shape)
+        # self.ndim = None                                     # [DV] added for support of variational length input
+        # if 'ndim' in kwargs:
+        #     self.ndim = kwargs['ndim']
 
     def _fix_unknown_dimension(self, input_shape, output_shape):
         '''Find and replace a single missing dimension in an output shape
@@ -222,6 +225,7 @@ class Reshape(Layer):
             if input_shape is not None:
                 target_shape = self.get_output_shape_for(input_shape)
         return K.reshape(x, (-1,) + target_shape)
+        # return K.reshape(x, (-1,) + target_shape, self.ndim)
 
     def get_config(self):
         config = {'target_shape': self.target_shape}
@@ -272,8 +276,8 @@ class Permute(Layer):
         # for i, dim in enumerate(self.dims):
         #     target_dim = input_shape[dim]
         #     output_shape[i+1] = target_dim
-        print('@Line277, input_shape = ', input_shape)
-        print('@line278, output_shape = ', output_shape)
+        # print('@Line277, input_shape = ', input_shape)
+        # print('@line278, output_shape = ', output_shape)
         return tuple(output_shape)
 
     def call(self, x, mask=None):
@@ -312,7 +316,7 @@ class Flatten(Layer):
     #                         'or "batch_input_shape" argument to the first '
     #                         'layer in your model.')
     #     return (input_shape[0], np.prod(input_shape[1:]))
-    def get_output_shape_for(self, input_shape):
+    def get_output_shape_for(self, input_shape):                      # [DV] modified to support FCN
         if not all(input_shape[1:]):
             return (input_shape[0], None)
         return (input_shape[0], np.prod(input_shape[1:]))
