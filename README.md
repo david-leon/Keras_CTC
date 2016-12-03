@@ -1,10 +1,10 @@
-# Keras MOD
-[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/daweileng/keras_MOD/blob/master/LICENSE)  
-A modified fork of Keras, with base version 1.0.6  
+# Keras CTC
+[![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/david-leon/keras_CTC/blob/master/LICENSE)  
+A modified fork of Keras with multiple enhanced features, with base version 1.0.6, only Theano backend supported.
 
 ------------------
 ## Purpose  
-This MOD was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/daweileng/Precise-CTC] into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
+This fork was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/david-leon/Precise-CTC] into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
 What you should mind is that currently all the modifications are based on Theano backend, they are not tested or unavaible at all for Tensorflow backend.
 
 ------------------
