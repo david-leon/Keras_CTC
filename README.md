@@ -1,10 +1,10 @@
-# Keras CTC
+# Keras-CTC
 [![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/david-leon/keras_CTC/blob/master/LICENSE)  
 A modified fork of Keras with multiple enhanced features, with base version 1.0.6, only Theano backend supported.
 
 ------------------
 ## Purpose  
-This fork was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation [see https://github.com/david-leon/Precise-CTC] into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
+This fork was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
 What you should mind is that currently all the modifications are based on Theano backend, they are not tested or unavaible at all for Tensorflow backend.
 
 ------------------
@@ -45,7 +45,7 @@ To use another train/test/predict function besides the 'default' one, just need 
 
 ------------------
 ## Usage Guide (draft)
-This guide will walk you through nearly all the features added in Keras-MOD with a toy demo. The toy demo uses MNIST dataset to simulate digit sequence images. To recognize the digit text sequence, an E2E (end-to-end) system is built with architecture of RNN on top of FCN. The E2E system leverages the power of CNN to fulfill the task of automatic feature extraction, and the power of LSTM-RNN to fulfill the task of sequence recognition. This E2E system features:  
+This guide will walk you through nearly all the features added in Keras-CTC with a toy demo. The toy demo uses MNIST dataset to simulate digit sequence images. To recognize the digit text sequence, an E2E (end-to-end) system is built with architecture of RNN on top of FCN. The E2E system leverages the power of CNN to fulfill the task of automatic feature extraction, and the power of LSTM-RNN to fulfill the task of sequence recognition. This E2E system features:  
 * Seamless integration of CNN and RNN, providing the capability for simultaneous optimaization
 * Support for variational length input, more natural for sequence data processing
 
@@ -119,5 +119,5 @@ From the above two models you now can see how
   * 2) End-to-end artecture of FCN + RNN
   * 3) bi-directional RNN    
     
-can be built with Keras-MOD. 
+can be built with Keras-CTC. 
 
