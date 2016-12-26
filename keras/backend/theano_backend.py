@@ -961,12 +961,12 @@ def conv2d(x, kernel, strides=(1, 1), border_mode='valid',
     if filter_shape is not None:
         filter_shape = tuple(int_or_none(v) for v in filter_shape)
 
-    print('x = ', x)
-    print('kernel = ', kernel)
-    print('th_border_mode = ', th_border_mode)
-    print('strides = ', strides)
-    print('image_shape = ', image_shape)
-    print('filter_shape = ', filter_shape)
+    # print('x = ', x)
+    # print('kernel = ', kernel)
+    # print('th_border_mode = ', th_border_mode)
+    # print('strides = ', strides)
+    # print('image_shape = ', image_shape)
+    # print('filter_shape = ', filter_shape)
     # TODO: remove the if statement when theano with no filter dilation is deprecated.
     if filter_dilation == (1, 1):
         conv_out = T.nnet.conv2d(x, kernel,

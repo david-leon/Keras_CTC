@@ -543,7 +543,7 @@ class Model(Container):
             loss_function = objectives.get(loss)
             loss_functions = [loss_function for _ in range(len(self.outputs))]
         self.loss_functions = loss_functions
-        weighted_losses = []
+        weighted_losses = []                    # [DV] add support for ctc
         for fn in loss_functions:
             if fn.__name__.startswith('ctc'):
                 weighted_losses.append(fn)
@@ -552,7 +552,7 @@ class Model(Container):
 
         # prepare output masks
         masks = self.compute_mask(self.inputs, mask=None)
-        print('    @Line526, masks =', masks)
+       # print('    @Line526, masks =', masks)
         if masks is None:
             masks = [None for _ in self.outputs]
         if type(masks) is not list:
@@ -621,7 +621,7 @@ class Model(Container):
                 ndim = len(shape)-1
             else:
                 ndim = len(shape)
-            print('    @Line595, ndim = ', ndim)
+           # print('    @Line595, ndim = ', ndim)
             self.targets.append(K.placeholder(ndim=ndim, name=name + '_target'))
 
         # prepare metrics
@@ -637,9 +637,9 @@ class Model(Container):
             sample_weight = sample_weights[i]
             mask = masks[i]
             loss_weight = loss_weights_list[i]
-            print('    @Line606, sample_weight = ', sample_weight)
-            print('    @Line606, mask = ', mask)
-            print('    @Line606, loss_function = ', loss_functions[i].__name__)
+           # print('    @Line606, sample_weight = ', sample_weight)
+           # print('    @Line606, mask = ', mask)
+           # print('    @Line606, loss_function = ', loss_functions[i].__name__)
             output_loss = weighted_loss(y_true, y_pred, sample_weight, mask)
             if len(self.outputs) > 1:
                 self.metrics.append(output_loss)
@@ -693,8 +693,8 @@ class Model(Container):
         self.optimizer = optimizers.get(optimizer)
         self.total_loss = total_loss
         self.sample_weights = sample_weights
-        print('    @Line663, len of sample_weights = ', len(sample_weights))
-        print('    @Line664, type of sample_weights = ', type(sample_weights[0]))
+        #print('    @Line663, len of sample_weights = ', len(sample_weights))
+        #print('    @Line664, type of sample_weights = ', type(sample_weights[0]))
 
         self.loss_functions = loss_functions          # [DV] added for ctc
         self.masks = masks                            # [DV] added for ctc

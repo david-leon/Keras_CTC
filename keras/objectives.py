@@ -76,7 +76,7 @@ from .utils.generic_utils import get_from_module
 def get(identifier):
     return get_from_module(identifier, globals(), 'objective')
 
-#------------------------------     for CTC cost      -------------------------------------------------#
+#------------------------------     for CTC cost  [DV]    -------------------------------------------------#
 from .ctc_theano import CTC_precise, CTC_for_train
 import theano.tensor as tensor
 

@@ -168,7 +168,7 @@ class Recurrent(Layer):
         if self.input_dim:
             kwargs['input_shape'] = (self.input_length, self.input_dim)
         super(Recurrent, self).__init__(**kwargs)
-        self.kwargs = kwargs
+        self.kwargs = kwargs    # [DV] add for additional input of RNN
 
     def get_output_shape_for(self, input_shape):
         if self.return_sequences:
