@@ -1,6 +1,5 @@
 from __future__ import absolute_import
 from . import backend as K
-import numpy as np
 from .utils.generic_utils import get_from_module
 from six.moves import zip
 
@@ -11,8 +10,25 @@ def clip_norm(g, c, n):
     return g
 
 
-def kl_divergence(p, p_hat):
-    return p_hat - p + p * K.log(p / p_hat)
+def optimizer_from_config(config, custom_objects=None):
+    all_classes = {
+        'sgd': SGD,
+        'rmsprop': RMSprop,
+        'adagrad': Adagrad,
+        'adadelta': Adadelta,
+        'adam': Adam,
+        'adamax': Adamax,
+        'nadam': Nadam,
+        'tfoptimizer': TFOptimizer,
+    }
+    class_name = config['class_name']
+    if custom_objects and class_name in custom_objects:
+        cls = custom_objects[class_name]
+    else:
+        if class_name.lower() not in all_classes:
+            raise ValueError('Optimizer class not found:', class_name)
+        cls = all_classes[class_name.lower()]
+    return cls.from_config(config['config'])
 
 
 class Optimizer(object):
@@ -32,19 +48,11 @@ class Optimizer(object):
         allowed_kwargs = {'clipnorm', 'clipvalue'}
         for k in kwargs:
             if k not in allowed_kwargs:
-                raise Exception('Unexpected keyword argument '
+                raise TypeError('Unexpected keyword argument '
                                 'passed to optimizer: ' + str(k))
         self.__dict__.update(kwargs)
         self.updates = []
         self.weights = []
-
-    def get_state(self):
-        return [K.get_value(u[0]) for u in self.updates]
-
-    def set_state(self, value_list):
-        assert len(self.updates) == len(value_list)
-        for u, v in zip(self.updates, value_list):
-            K.set_value(u[0], v)
 
     def get_updates(self, params, constraints, loss):
         raise NotImplementedError
@@ -72,34 +80,34 @@ class Optimizer(object):
                 output of `get_weights`).
         '''
         params = self.weights
-        if len(params) != len(weights):
-            raise Exception('Provided weight array does not match  weights (' +
-                            str(len(params)) + ' optimizer params vs. ' +
-                            str(len(weights)) + ' provided weights)')
-        for p, w in zip(params, weights):
-            if K.get_value(p).shape != w.shape:
-                raise Exception('Optimizer weight shape ' +
-                                str(K.get_value(p).shape) +
-                                ' not compatible with '
-                                'provided weight shape ' + str(w.shape))
-            K.set_value(p, w)
+        weight_value_tuples = []
+        param_values = K.batch_get_value(params)
+        for pv, p, w in zip(param_values, params, weights):
+            if pv.shape != w.shape:
+                raise ValueError('Optimizer weight shape ' +
+                                 str(pv.shape) +
+                                 ' not compatible with '
+                                 'provided weight shape ' + str(w.shape))
+            weight_value_tuples.append((p, w))
+        K.batch_set_value(weight_value_tuples)
 
     def get_weights(self):
         '''Returns the current weights of the optimizer,
         as a list of numpy arrays.
         '''
-        weights = []
-        for p in self.weights:
-            weights.append(K.get_value(p))
-        return weights
+        return K.batch_get_value(self.weights)
 
     def get_config(self):
-        config = {'name': self.__class__.__name__}
+        config = {}
         if hasattr(self, 'clipnorm'):
             config['clipnorm'] = self.clipnorm
         if hasattr(self, 'clipvalue'):
             config['clipvalue'] = self.clipvalue
         return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 
 class SGD(Optimizer):
@@ -120,15 +128,22 @@ class SGD(Optimizer):
         self.lr = K.variable(lr)
         self.momentum = K.variable(momentum)
         self.decay = K.variable(decay)
+        self.inital_decay = decay
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
-        lr = self.lr * (1. / (1. + self.decay * self.iterations))
-        self.updates = [K.update_add(self.iterations, 1)]
+        self.updates = []
+
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
+            self.updates .append(K.update_add(self.iterations, 1))
 
         # momentum
-        self.weights = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        for p, g, m in zip(params, grads, self.weights):
+        shapes = [K.get_variable_shape(p) for p in params]
+        moments = [K.zeros(shape) for shape in shapes]
+        self.weights = [self.iterations] + moments
+        for p, g, m in zip(params, grads, moments):
             v = self.momentum * m - lr * g  # velocity
             self.updates.append(K.update(m, v))
 
@@ -168,24 +183,35 @@ class RMSprop(Optimizer):
         lr: float >= 0. Learning rate.
         rho: float >= 0.
         epsilon: float >= 0. Fuzz factor.
+        decay: float >= 0. Learning rate decay over each update.
     '''
-    def __init__(self, lr=0.001, rho=0.9, epsilon=1e-8, **kwargs):
+    def __init__(self, lr=0.001, rho=0.9, epsilon=1e-8, decay=0.,
+                 **kwargs):
         super(RMSprop, self).__init__(**kwargs)
         self.__dict__.update(locals())
         self.lr = K.variable(lr)
         self.rho = K.variable(rho)
+        self.decay = K.variable(decay)
+        self.inital_decay = decay
+        self.iterations = K.variable(0.)
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
-        # accumulators
-        self.weights = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
+        shapes = [K.get_variable_shape(p) for p in params]
+        accumulators = [K.zeros(shape) for shape in shapes]
+        self.weights = accumulators
         self.updates = []
 
-        for p, g, a in zip(params, grads, self.weights):
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
+            self.updates.append(K.update_add(self.iterations, 1))
+
+        for p, g, a in zip(params, grads, accumulators):
             # update accumulator
             new_a = self.rho * a + (1. - self.rho) * K.square(g)
             self.updates.append(K.update(a, new_a))
-            new_p = p - self.lr * g / (K.sqrt(new_a) + self.epsilon)
+            new_p = p - lr * g / (K.sqrt(new_a) + self.epsilon)
 
             # apply constraints
             if p in constraints:
@@ -197,6 +223,7 @@ class RMSprop(Optimizer):
     def get_config(self):
         config = {'lr': float(K.get_value(self.lr)),
                   'rho': float(K.get_value(self.rho)),
+                  'decay': float(K.get_value(self.decay)),
                   'epsilon': self.epsilon}
         base_config = super(RMSprop, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -211,22 +238,34 @@ class Adagrad(Optimizer):
     # Arguments
         lr: float >= 0. Learning rate.
         epsilon: float >= 0.
+
+    # References
+        - [Adaptive Subgradient Methods for Online Learning and Stochastic Optimization](http://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf)
     '''
-    def __init__(self, lr=0.01, epsilon=1e-8, **kwargs):
+    def __init__(self, lr=0.01, epsilon=1e-8, decay=0., **kwargs):
         super(Adagrad, self).__init__(**kwargs)
         self.__dict__.update(locals())
         self.lr = K.variable(lr)
+        self.decay = K.variable(decay)
+        self.inital_decay = decay
+        self.iterations = K.variable(0.)
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
-        # accumulators
-        self.weights = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
+        shapes = [K.get_variable_shape(p) for p in params]
+        accumulators = [K.zeros(shape) for shape in shapes]
+        self.weights = accumulators
         self.updates = []
 
-        for p, g, a in zip(params, grads, self.weights):
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
+            self.updates.append(K.update_add(self.iterations, 1))
+
+        for p, g, a in zip(params, grads, accumulators):
             new_a = a + K.square(g)  # update accumulator
             self.updates.append(K.update(a, new_a))
-            new_p = p - self.lr * g / (K.sqrt(new_a) + self.epsilon)
+            new_p = p - lr * g / (K.sqrt(new_a) + self.epsilon)
             # apply constraints
             if p in constraints:
                 c = constraints[p]
@@ -236,6 +275,7 @@ class Adagrad(Optimizer):
 
     def get_config(self):
         config = {'lr': float(K.get_value(self.lr)),
+                  'decay': float(K.get_value(self.decay)),
                   'epsilon': self.epsilon}
         base_config = super(Adagrad, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -256,17 +296,27 @@ class Adadelta(Optimizer):
     # References
         - [Adadelta - an adaptive learning rate method](http://arxiv.org/abs/1212.5701)
     '''
-    def __init__(self, lr=1.0, rho=0.95, epsilon=1e-8, **kwargs):
+    def __init__(self, lr=1.0, rho=0.95, epsilon=1e-8, decay=0.,
+                 **kwargs):
         super(Adadelta, self).__init__(**kwargs)
         self.__dict__.update(locals())
         self.lr = K.variable(lr)
+        self.decay = K.variable(decay)
+        self.inital_decay = decay
+        self.iterations = K.variable(0.)
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
-        accumulators = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        delta_accumulators = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
+        shapes = [K.get_variable_shape(p) for p in params]
+        accumulators = [K.zeros(shape) for shape in shapes]
+        delta_accumulators = [K.zeros(shape) for shape in shapes]
         self.weights = accumulators + delta_accumulators
         self.updates = []
+
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
+            self.updates.append(K.update_add(self.iterations, 1))
 
         for p, g, a, d_a in zip(params, grads, accumulators, delta_accumulators):
             # update accumulator
@@ -276,7 +326,7 @@ class Adadelta(Optimizer):
             # use the new accumulator and the *old* delta_accumulator
             update = g * K.sqrt(d_a + self.epsilon) / K.sqrt(new_a + self.epsilon)
 
-            new_p = p - self.lr * update
+            new_p = p - lr * update
             # apply constraints
             if p in constraints:
                 c = constraints[p]
@@ -291,6 +341,7 @@ class Adadelta(Optimizer):
     def get_config(self):
         config = {'lr': float(K.get_value(self.lr)),
                   'rho': self.rho,
+                  'decay': float(K.get_value(self.decay)),
                   'epsilon': self.epsilon}
         base_config = super(Adadelta, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -310,24 +361,31 @@ class Adam(Optimizer):
         - [Adam - A Method for Stochastic Optimization](http://arxiv.org/abs/1412.6980v8)
     '''
     def __init__(self, lr=0.001, beta_1=0.9, beta_2=0.999,
-                 epsilon=1e-8, **kwargs):
+                 epsilon=1e-8, decay=0., **kwargs):
         super(Adam, self).__init__(**kwargs)
         self.__dict__.update(locals())
         self.iterations = K.variable(0)
         self.lr = K.variable(lr)
         self.beta_1 = K.variable(beta_1)
         self.beta_2 = K.variable(beta_2)
+        self.decay = K.variable(decay)
+        self.inital_decay = decay
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
         self.updates = [K.update_add(self.iterations, 1)]
 
-        t = self.iterations + 1
-        lr_t = self.lr * K.sqrt(1. - K.pow(self.beta_2, t)) / (1. - K.pow(self.beta_1, t))
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
 
-        ms = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        vs = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        self.weights = ms + vs
+        t = self.iterations + 1
+        lr_t = lr * K.sqrt(1. - K.pow(self.beta_2, t)) / (1. - K.pow(self.beta_1, t))
+
+        shapes = [K.get_variable_shape(p) for p in params]
+        ms = [K.zeros(shape) for shape in shapes]
+        vs = [K.zeros(shape) for shape in shapes]
+        self.weights = [self.iterations] + ms + vs
 
         for p, g, m, v in zip(params, grads, ms, vs):
             m_t = (self.beta_1 * m) + (1. - self.beta_1) * g
@@ -349,6 +407,7 @@ class Adam(Optimizer):
         config = {'lr': float(K.get_value(self.lr)),
                   'beta_1': float(K.get_value(self.beta_1)),
                   'beta_2': float(K.get_value(self.beta_2)),
+                  'decay': float(K.get_value(self.decay)),
                   'epsilon': self.epsilon}
         base_config = super(Adam, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -369,26 +428,33 @@ class Adamax(Optimizer):
         - [Adam - A Method for Stochastic Optimization](http://arxiv.org/abs/1412.6980v8)
     '''
     def __init__(self, lr=0.002, beta_1=0.9, beta_2=0.999,
-                 epsilon=1e-8, **kwargs):
+                 epsilon=1e-8, decay=0., **kwargs):
         super(Adamax, self).__init__(**kwargs)
         self.__dict__.update(locals())
         self.iterations = K.variable(0.)
         self.lr = K.variable(lr)
         self.beta_1 = K.variable(beta_1)
         self.beta_2 = K.variable(beta_2)
+        self.decay = K.variable(decay)
+        self.inital_decay = decay
 
     def get_updates(self, params, constraints, loss):
         grads = self.get_gradients(loss, params)
         self.updates = [K.update_add(self.iterations, 1)]
 
-        t = self.iterations + 1
-        lr_t = self.lr / (1. - K.pow(self.beta_1, t))
+        lr = self.lr
+        if self.inital_decay > 0:
+            lr *= (1. / (1. + self.decay * self.iterations))
 
+        t = self.iterations + 1
+        lr_t = lr / (1. - K.pow(self.beta_1, t))
+
+        shapes = [K.get_variable_shape(p) for p in params]
         # zero init of 1st moment
-        ms = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
+        ms = [K.zeros(shape) for shape in shapes]
         # zero init of exponentially weighted infinity norm
-        us = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        self.weights = ms + us
+        us = [K.zeros(shape) for shape in shapes]
+        self.weights = [self.iterations] + ms + us
 
         for p, g, m, u in zip(params, grads, ms, us):
 
@@ -411,6 +477,7 @@ class Adamax(Optimizer):
         config = {'lr': float(K.get_value(self.lr)),
                   'beta_1': float(K.get_value(self.beta_1)),
                   'beta_2': float(K.get_value(self.beta_2)),
+                  'decay': float(K.get_value(self.decay)),
                   'epsilon': self.epsilon}
         base_config = super(Adamax, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
@@ -431,9 +498,8 @@ class Nadam(Optimizer):
         epsilon: float >= 0. Fuzz factor.
 
     # References
-        [1] Nadam report - http://cs229.stanford.edu/proj2015/054_report.pdf
-        [2] On the importance of initialization and momentum in deep learning -
-            http://www.cs.toronto.edu/~fritz/absps/momentum.pdf
+        - [Nadam report](http://cs229.stanford.edu/proj2015/054_report.pdf)
+        - [On the importance of initialization and momentum in deep learning](http://www.cs.toronto.edu/~fritz/absps/momentum.pdf)
     '''
     def __init__(self, lr=0.002, beta_1=0.9, beta_2=0.999,
                  epsilon=1e-8, schedule_decay=0.004, **kwargs):
@@ -459,10 +525,11 @@ class Nadam(Optimizer):
         m_schedule_next = self.m_schedule * momentum_cache_t * momentum_cache_t_1
         self.updates.append((self.m_schedule, m_schedule_new))
 
-        ms = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
-        vs = [K.variable(np.zeros(K.get_value(p).shape)) for p in params]
+        shapes = [K.get_variable_shape(p) for p in params]
+        ms = [K.zeros(shape) for shape in shapes]
+        vs = [K.zeros(shape) for shape in shapes]
 
-        self.weights = ms + vs
+        self.weights = [self.iterations] + ms + vs
 
         for p, g, m, v in zip(params, grads, ms, vs):
             # the following equations given in [1]
@@ -496,6 +563,36 @@ class Nadam(Optimizer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
+class TFOptimizer(Optimizer):
+
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        self.iterations = K.variable(0.)
+        self.updates = []
+
+    def get_updates(self, params, constraints, loss):
+        if constraints:
+            raise ValueError('TF optimizers do not support '
+                             'weights constraints. Either remove '
+                             'all weights constraints in your model, '
+                             'or use a Keras optimizer.')
+        grads = self.optimizer.compute_gradients(loss, params)
+        opt_update = self.optimizer.apply_gradients(
+            grads, global_step=self.iterations)
+        self.updates.append(opt_update)
+        return self.updates
+
+    @property
+    def weights(self):
+        raise NotImplementedError
+
+    def get_config(self):
+        raise NotImplementedError
+
+    def from_config(self, config):
+        raise NotImplementedError
+
+
 # aliases
 sgd = SGD
 rmsprop = RMSprop
@@ -507,5 +604,11 @@ nadam = Nadam
 
 
 def get(identifier, kwargs=None):
+    if K.backend() == 'tensorflow':
+        # Wrap TF optimizer instances
+        import tensorflow as tf
+        if isinstance(identifier, tf.train.Optimizer):
+            return TFOptimizer(identifier)
+    # Instantiate a Keras optimizer
     return get_from_module(identifier, globals(), 'optimizer',
                            instantiate=True, kwargs=kwargs)

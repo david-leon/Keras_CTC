@@ -1,5 +1,7 @@
 from __future__ import print_function
 import pytest
+import numpy as np
+np.random.seed(1337)
 
 from keras.utils.test_utils import get_test_data
 from keras.optimizers import SGD, RMSprop, Adagrad, Adadelta, Adam, Adamax, Nadam
@@ -45,22 +47,27 @@ def test_sgd():
 
 def test_rmsprop():
     _test_optimizer(RMSprop())
+    _test_optimizer(RMSprop(decay=1e-3))
 
 
 def test_adagrad():
     _test_optimizer(Adagrad())
+    _test_optimizer(Adagrad(decay=1e-3))
 
 
 def test_adadelta():
-    _test_optimizer(Adadelta())
+    _test_optimizer(Adadelta(), target=0.83)
+    _test_optimizer(Adadelta(decay=1e-3), target=0.83)
 
 
 def test_adam():
     _test_optimizer(Adam())
+    _test_optimizer(Adam(decay=1e-3))
 
 
 def test_adamax():
     _test_optimizer(Adamax())
+    _test_optimizer(Adamax(decay=1e-3))
 
 
 def test_nadam():

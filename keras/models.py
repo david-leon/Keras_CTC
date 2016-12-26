@@ -1,22 +1,199 @@
 from __future__ import print_function
 import warnings
 import copy
+import json
+import os
+import numpy as np
 
 from . import backend as K
+from . import optimizers
+from .utils.io_utils import ask_to_proceed_with_overwrite
 from .engine.training import Model
-from .engine.topology import get_source_inputs, Node
-from .legacy.models import Graph
+from .engine.topology import get_source_inputs, Node, Layer, Merge
+from .optimizers import optimizer_from_config
 
 
-def model_from_config(config, custom_objects={}):
+def save_model(model, filepath, overwrite=True):
+
+    def get_json_type(obj):
+        # if obj is a serializable Keras class instance
+        # e.g. optimizer, layer
+        if hasattr(obj, 'get_config'):
+            return {'class_name': obj.__class__.__name__,
+                    'config': obj.get_config()}
+
+        # if obj is any numpy type
+        if type(obj).__module__ == np.__name__:
+            return obj.item()
+
+        # misc functions (e.g. loss function)
+        if callable(obj):
+            return obj.__name__
+
+        # if obj is a python 'type'
+        if type(obj).__name__ == type.__name__:
+            return obj.__name__
+
+        raise TypeError('Not JSON Serializable:', obj)
+
+    import h5py
+    from keras import __version__ as keras_version
+
+    # if file exists and should not be overwritten
+    if not overwrite and os.path.isfile(filepath):
+        proceed = ask_to_proceed_with_overwrite(filepath)
+        if not proceed:
+            return
+
+    f = h5py.File(filepath, 'w')
+    f.attrs['keras_version'] = str(keras_version).encode('utf8')
+    f.attrs['model_config'] = json.dumps({
+        'class_name': model.__class__.__name__,
+        'config': model.get_config()
+    }, default=get_json_type).encode('utf8')
+
+    model_weights_group = f.create_group('model_weights')
+    model.save_weights_to_hdf5_group(model_weights_group)
+
+    if hasattr(model, 'optimizer'):
+        if isinstance(model.optimizer, optimizers.TFOptimizer):
+            warnings.warn(
+                'TensorFlow optimizers do not '
+                'make it possible to access '
+                'optimizer attributes or optimizer state '
+                'after instantiation. '
+                'As a result, we cannot save the optimizer '
+                'as part of the model save file.'
+                'You will have to compile your model again after loading it. '
+                'Prefer using a Keras optimizer instead '
+                '(see keras.io/optimizers).')
+        else:
+            f.attrs['training_config'] = json.dumps({
+                'optimizer_config': {
+                    'class_name': model.optimizer.__class__.__name__,
+                    'config': model.optimizer.get_config()
+                },
+                'loss': model.loss,
+                'metrics': model.metrics,
+                'sample_weight_mode': model.sample_weight_mode,
+                'loss_weights': model.loss_weights,
+            }, default=get_json_type).encode('utf8')
+
+            # save optimizer weights
+            symbolic_weights = getattr(model.optimizer, 'weights')
+            if symbolic_weights:
+                optimizer_weights_group = f.create_group('optimizer_weights')
+                weight_values = K.batch_get_value(symbolic_weights)
+                weight_names = []
+                for i, (w, val) in enumerate(zip(symbolic_weights, weight_values)):
+                    if hasattr(w, 'name') and w.name:
+                        name = str(w.name)
+                    else:
+                        name = 'param_' + str(i)
+                    weight_names.append(name.encode('utf8'))
+                optimizer_weights_group.attrs['weight_names'] = weight_names
+                for name, val in zip(weight_names, weight_values):
+                    param_dset = optimizer_weights_group.create_dataset(
+                        name,
+                        val.shape,
+                        dtype=val.dtype)
+                    if not val.shape:
+                        # scalar
+                        param_dset[()] = val
+                    else:
+                        param_dset[:] = val
+    f.flush()
+    f.close()
+
+
+def load_model(filepath, custom_objects=None):
+    if not custom_objects:
+        custom_objects = {}
+
+    def deserialize(obj):
+        if isinstance(obj, list):
+            deserialized = []
+            for value in obj:
+                if value in custom_objects:
+                    deserialized.append(custom_objects[value])
+                else:
+                    deserialized.append(value)
+            return deserialized
+        if isinstance(obj, dict):
+            deserialized = {}
+            for key, value in obj.items():
+                if value in custom_objects:
+                    deserialized[key] = custom_objects[value]
+                else:
+                    deserialized[key] = value
+            return deserialized
+        if obj in custom_objects:
+            return custom_objects[obj]
+        return obj
+
+    import h5py
+    f = h5py.File(filepath, mode='r')
+
+    # instantiate model
+    model_config = f.attrs.get('model_config')
+    if model_config is None:
+        raise ValueError('No model found in config file.')
+    model_config = json.loads(model_config.decode('utf-8'))
+    model = model_from_config(model_config, custom_objects=custom_objects)
+
+    # set weights
+    model.load_weights_from_hdf5_group(f['model_weights'])
+
+    # instantiate optimizer
+    training_config = f.attrs.get('training_config')
+    if training_config is None:
+        warnings.warn('No training configuration found in save file: '
+                      'the model was *not* compiled. Compile it manually.')
+        f.close()
+        return model
+    training_config = json.loads(training_config.decode('utf-8'))
+    optimizer_config = training_config['optimizer_config']
+    optimizer = optimizer_from_config(optimizer_config,
+                                      custom_objects=custom_objects)
+
+    # recover loss functions and metrics
+    loss = deserialize(training_config['loss'])
+    metrics = deserialize(training_config['metrics'])
+    sample_weight_mode = training_config['sample_weight_mode']
+    loss_weights = training_config['loss_weights']
+
+    # compile model
+    model.compile(optimizer=optimizer,
+                  loss=loss,
+                  metrics=metrics,
+                  loss_weights=loss_weights,
+                  sample_weight_mode=sample_weight_mode)
+
+    # set optimizer weights
+    if 'optimizer_weights' in f:
+        # build train function (to get weight updates)
+        if isinstance(model, Sequential):
+            model.model._make_train_function()
+        else:
+            model._make_train_function()
+        optimizer_weights_group = f['optimizer_weights']
+        optimizer_weight_names = [n.decode('utf8') for n in optimizer_weights_group.attrs['weight_names']]
+        optimizer_weight_values = [optimizer_weights_group[n] for n in optimizer_weight_names]
+        model.optimizer.set_weights(optimizer_weight_values)
+    f.close()
+    return model
+
+
+def model_from_config(config, custom_objects=None):
     from keras.utils.layer_utils import layer_from_config
     if isinstance(config, list):
-        raise Exception('`model_fom_config` expects a dictionary, not a list. '
-                        'Maybe you meant to use `Sequential.from_config(config)`?')
+        raise TypeError('`model_fom_config` expects a dictionary, not a list. '
+                        'Maybe you meant to use '
+                        '`Sequential.from_config(config)`?')
     return layer_from_config(config, custom_objects=custom_objects)
 
 
-def model_from_yaml(yaml_string, custom_objects={}):
+def model_from_yaml(yaml_string, custom_objects=None):
     '''Parses a yaml model configuration file
     and returns a model instance.
     '''
@@ -26,7 +203,7 @@ def model_from_yaml(yaml_string, custom_objects={}):
     return layer_from_config(config, custom_objects=custom_objects)
 
 
-def model_from_json(json_string, custom_objects={}):
+def model_from_json(json_string, custom_objects=None):
     '''Parses a JSON model configuration file
     and returns a model instance.
     '''
@@ -72,11 +249,12 @@ class Sequential(Model):
             model.add(Dense(32))
         ```
     '''
-    def __init__(self, layers=[], name=None):
+    def __init__(self, layers=None, name=None):
         self.layers = []  # stack of layers
         self.model = None  # internal Model instance
         self.inputs = []  # tensors
         self.outputs = []  # tensors (length 1)
+        self._trainable = True
 
         # model attributes
         self.inbound_nodes = []
@@ -89,8 +267,9 @@ class Sequential(Model):
             name = prefix + str(K.get_uid(prefix))
         self.name = name
 
-        for layer in layers:
-            self.add(layer)
+        if layers:
+            for layer in layers:
+                self.add(layer)
 
     def add(self, layer):
         '''Adds a layer instance on top of the layer stack.
@@ -98,14 +277,19 @@ class Sequential(Model):
         # Arguments
             layer: layer instance.
         '''
+        if not isinstance(layer, Layer):
+            raise TypeError('The added layer must be '
+                            'an instance of class Layer. '
+                            'Found: ' + str(layer))
         if not self.outputs:
             # first layer in model: check that it is an input layer
             if len(layer.inbound_nodes) == 0:
                 # create an input layer
                 if not hasattr(layer, 'batch_input_shape'):
-                    raise Exception('The first layer in a Sequential model must '
-                                    'get an `input_shape` or '
-                                    '`batch_input_shape` argument.')
+                    raise ValueError('The first layer in a '
+                                     'Sequential model must '
+                                     'get an `input_shape` or '
+                                     '`batch_input_shape` argument.')
                 batch_input_shape = layer.batch_input_shape
                 if hasattr(layer, 'input_dtype'):
                     input_dtype = layer.input_dtype
@@ -114,17 +298,18 @@ class Sequential(Model):
                 layer.create_input_layer(batch_input_shape, input_dtype)
 
             if len(layer.inbound_nodes) != 1:
-                raise Exception('A layer added to a Sequential model must '
-                                'not already be connected somewhere else. '
-                                'Model received layer ' + layer.name +
-                                ' which has ' + str(len(layer.inbound_nodes)) +
-                                ' pre-existing inbound connections.')
+                raise ValueError('A layer added to a Sequential model must '
+                                 'not already be connected somewhere else. '
+                                 'Model received layer ' + layer.name +
+                                 ' which has ' +
+                                 str(len(layer.inbound_nodes)) +
+                                 ' pre-existing inbound connections.')
 
             if len(layer.inbound_nodes[0].output_tensors) != 1:
-                raise Exception('All layers in a Sequential model '
-                                'should have a single output tensor. '
-                                'For multi-output layers, '
-                                'use the functional API.')
+                raise ValueError('All layers in a Sequential model '
+                                 'should have a single output tensor. '
+                                 'For multi-output layers, '
+                                 'use the functional API.')
 
             self.outputs = [layer.inbound_nodes[0].output_tensors[0]]
             self.inputs = get_source_inputs(self.outputs[0])
@@ -144,8 +329,8 @@ class Sequential(Model):
                  output_shapes=[self.outputs[0]._keras_shape])
         else:
             output_tensor = layer(self.outputs[0])
-            if type(output_tensor) is list:
-                raise Exception('All layers in a Sequential model '
+            if isinstance(output_tensor, list):
+                raise TypeError('All layers in a Sequential model '
                                 'should have a single output tensor. '
                                 'For multi-output layers, '
                                 'use the functional API.')
@@ -162,7 +347,7 @@ class Sequential(Model):
         '''Removes the last layer in the model.
         '''
         if not self.layers:
-            raise Exception('There are no layers in the model.')
+            raise TypeError('There are no layers in the model.')
 
         self.layers.pop()
         if not self.layers:
@@ -176,6 +361,23 @@ class Sequential(Model):
             self.inbound_nodes[0].output_tensors = self.outputs
             self.inbound_nodes[0].output_shapes = [self.outputs[0]._keras_shape]
         self.built = False
+        self._flattened_layers = None
+
+    def get_layer(self, name=None, index=None):
+        '''Returns a layer based on either its name (unique)
+        or its index in the graph. Indices are based on
+        order of horizontal graph traversal (bottom-up).
+
+        # Arguments
+            name: string, name of layer.
+            index: integer, index of layer.
+
+        # Returns
+            A layer instance.
+        '''
+        if not self.built:
+            self.build()
+        return self.model.get_layer(name, index)
 
     def call(self, x, mask=None):
         if not self.built:
@@ -184,10 +386,12 @@ class Sequential(Model):
 
     def build(self, input_shape=None):
         if not self.inputs or not self.outputs:
-            raise Exception('Sequential model cannot be built: model is empty.'
+            raise TypeError('Sequential model cannot be built: model is empty.'
                             ' Add some layers first.')
         # actually create the model
-        self.model = Model(self.inputs, self.outputs[0], name=self.name + '_model')
+        self.model = Model(self.inputs, self.outputs[0],
+                           name=self.name + '_model')
+        self.model.trainable = self.trainable
 
         # mirror model attributes
         self.supports_masking = self.model.supports_masking
@@ -221,26 +425,27 @@ class Sequential(Model):
         if self._flattened_layers is not None:
             return self._flattened_layers
         layers = []
-        if self.layers[0].__class__.__name__ == 'Merge':
-            merge = self.layers[0]
-            for layer in merge.layers:
-                if hasattr(layer, 'flattened_layers'):
-                    for sublayer in layer.flattened_layers:
-                        if sublayer not in layers:
-                            layers.append(sublayer)
-                elif hasattr(layer, 'layers'):
-                    for sublayer in layer.layers:
-                        if sublayer not in layers:
-                            layers.append(sublayer)
-                else:
-                    if layer not in layers:
-                        layers.append(layer)
-        else:
-            if self.layers[0] not in layers:
-                layers.append(self.layers[0])
-        for layer in self.layers[1:]:
-            if layer not in layers:
-                layers.append(layer)
+        if self.layers:
+            if isinstance(self.layers[0], Merge):
+                merge = self.layers[0]
+                for layer in merge.layers:
+                    if hasattr(layer, 'flattened_layers'):
+                        for sublayer in layer.flattened_layers:
+                            if sublayer not in layers:
+                                layers.append(sublayer)
+                    elif hasattr(layer, 'layers'):
+                        for sublayer in layer.layers:
+                            if sublayer not in layers:
+                                layers.append(sublayer)
+                    else:
+                        if layer not in layers:
+                            layers.append(layer)
+            else:
+                if self.layers[0] not in layers:
+                    layers.append(self.layers[0])
+            for layer in self.layers[1:]:
+                if layer not in layers:
+                    layers.append(layer)
         self._flattened_layers = layers
         return layers
 
@@ -259,24 +464,49 @@ class Sequential(Model):
         return all_attrs
 
     @property
+    def trainable(self):
+        return self._trainable
+
+    @trainable.setter
+    def trainable(self, value):
+        if self.model:
+            self.model.trainable = value
+        self._trainable = value
+
+    @property
     def trainable_weights(self):
+        if not self.trainable:
+            return []
         # support for legacy behavior
         return self._gather_list_attr('trainable_weights')
 
     @property
     def non_trainable_weights(self):
         # support for legacy behavior
-        return self._gather_list_attr('non_trainable_weights')
+        weights = self._gather_list_attr('non_trainable_weights')
+        if not self.trainable:
+            trainable_weights = self._gather_list_attr('trainable_weights')
+            return trainable_weights + weights
+        return weights
 
     @property
     def updates(self):
-        # support for legacy behavior
-        return self._gather_list_attr('updates')
+        return self.model.updates
 
     @property
     def state_updates(self):
         # support for legacy behavior
-        return self._gather_list_attr('state_updates')
+        return self.model.state_updates
+
+    def get_updates_for(self, inputs):
+        return self.model.get_updates_for(inputs)
+
+    @property
+    def losses(self):
+        return self.model.losses
+
+    def get_losses_for(self, inputs):
+        return self.model.get_losses_for(inputs)
 
     @property
     def regularizers(self):
@@ -306,7 +536,7 @@ class Sequential(Model):
         '''
         # support for legacy behavior
         for layer in self.flattened_layers:
-            nb_param = len(layer.get_weights())
+            nb_param = len(layer.weights)
             layer.set_weights(weights[:nb_param])
             weights = weights[nb_param:]
 
@@ -319,7 +549,7 @@ class Sequential(Model):
         return self.model.training_data
 
     def compile(self, optimizer, loss,
-                metrics=[],
+                metrics=None,
                 sample_weight_mode=None,
                 **kwargs):
         '''Configures the learning process.
@@ -332,6 +562,7 @@ class Sequential(Model):
             metrics: list of metrics to be evaluated by the model
                 during training and testing.
                 Typically you will use `metrics=['accuracy']`.
+                See [metrics](/metrics).
             sample_weight_mode: if you need to do timestep-wise
                 sample weighting (2D weights), set this to "temporal".
                 "None" defaults to sample-wise weights (1D).
@@ -362,12 +593,15 @@ class Sequential(Model):
                            **kwargs)
         self.optimizer = self.model.optimizer
         self.loss = self.model.loss
+        self.loss_weights = self.model.loss_weights
+        self.metrics = self.model.metrics
+        self.metrics_tensors = self.model.metrics_tensors
         self.metrics_names = self.model.metrics_names
         self.sample_weight_mode = self.model.sample_weight_mode
 
-    def fit(self, x, y, batch_size=32, nb_epoch=10, verbose=1, callbacks=[],
+    def fit(self, x, y, batch_size=32, nb_epoch=10, verbose=1, callbacks=None,
             validation_split=0., validation_data=None, shuffle=True,
-            class_weight=None, sample_weight=None, **kwargs):
+            class_weight=None, sample_weight=None, initial_epoch=0, **kwargs):
         '''Trains the model for a fixed number of epochs.
 
         # Arguments
@@ -383,7 +617,8 @@ class Sequential(Model):
                 See [callbacks](/callbacks).
             validation_split: float (0. < x < 1).
                 Fraction of the data to use as held-out validation data.
-            validation_data: tuple (X, y) to be used as held-out
+            validation_data: tuple (x_val, y_val) or tuple
+                (x_val, y_val, val_sample_weights) to be used as held-out
                 validation data. Will override validation_split.
             shuffle: boolean or str (for 'batch').
                 Whether to shuffle the samples at each epoch.
@@ -401,6 +636,8 @@ class Sequential(Model):
                 to apply a different weight to every timestep of every sample.
                 In this case you should make sure to specify
                 sample_weight_mode="temporal" in compile().
+            initial_epoch: epoch at which to start training
+                (useful for resuming a previous training run)
 
         # Returns
             A `History` object. Its `History.history` attribute is
@@ -409,7 +646,8 @@ class Sequential(Model):
             and validation metrics values (if applicable).
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if 'show_accuracy' in kwargs:
             kwargs.pop('show_accuracy')
             warnings.warn('The "show_accuracy" argument is deprecated, '
@@ -418,7 +656,7 @@ class Sequential(Model):
                           '`model.compile(optimizer, loss, '
                           'metrics=["accuracy"])`')
         if kwargs:
-            raise Exception('Received unknown keyword arguments: ' +
+            raise TypeError('Received unknown keyword arguments: ' +
                             str(kwargs))
         return self.model.fit(x, y,
                               batch_size=batch_size,
@@ -429,7 +667,8 @@ class Sequential(Model):
                               validation_data=validation_data,
                               shuffle=shuffle,
                               class_weight=class_weight,
-                              sample_weight=sample_weight)
+                              sample_weight=sample_weight,
+                              initial_epoch=initial_epoch)
 
     def evaluate(self, x, y, batch_size=32, verbose=1,
                  sample_weight=None, **kwargs):
@@ -450,7 +689,8 @@ class Sequential(Model):
             the display labels for the scalar outputs.
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if 'show_accuracy' in kwargs:
             kwargs.pop('show_accuracy')
             warnings.warn('The "show_accuracy" argument is deprecated, '
@@ -459,7 +699,7 @@ class Sequential(Model):
                           '`model.compile(optimizer, loss, '
                           'metrics=["accuracy"])`')
         if kwargs:
-            raise Exception('Received unknown keyword arguments: ' +
+            raise TypeError('Received unknown keyword arguments: ' +
                             str(kwargs))
         return self.model.evaluate(x, y,
                                    batch_size=batch_size,
@@ -508,7 +748,8 @@ class Sequential(Model):
             the display labels for the scalar outputs.
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if 'accuracy' in kwargs:
             kwargs.pop('accuracy')
             warnings.warn('The "accuracy" argument is deprecated, '
@@ -516,12 +757,12 @@ class Sequential(Model):
                           'the model at compile time:\n'
                           '`model.compile(optimizer, loss, '
                           'metrics=["accuracy"])`')
-        # if kwargs:
-        #     raise Exception('Received unknown keyword arguments: ' +
-        #                     str(kwargs))
+        if kwargs:
+            raise TypeError('Received unknown keyword arguments: ' +
+                            str(kwargs))
         return self.model.train_on_batch(x, y,
                                          sample_weight=sample_weight,
-                                         class_weight=class_weight, **kwargs)
+                                         class_weight=class_weight)
 
     def test_on_batch(self, x, y,
                       sample_weight=None, **kwargs):
@@ -540,7 +781,8 @@ class Sequential(Model):
             the display labels for the scalar outputs.
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if 'accuracy' in kwargs:
             kwargs.pop('accuracy')
             warnings.warn('The "accuracy" argument is deprecated, '
@@ -549,7 +791,7 @@ class Sequential(Model):
                           '`model.compile(optimizer, loss, '
                           'metrics=["accuracy"])`')
         if kwargs:
-            raise Exception('Received unknown keyword arguments: ' +
+            raise TypeError('Received unknown keyword arguments: ' +
                             str(kwargs))
         return self.model.test_on_batch(x, y,
                                         sample_weight=sample_weight)
@@ -595,9 +837,10 @@ class Sequential(Model):
             return (proba > 0.5).astype('int32')
 
     def fit_generator(self, generator, samples_per_epoch, nb_epoch,
-                      verbose=1, callbacks=[],
+                      verbose=1, callbacks=None,
                       validation_data=None, nb_val_samples=None,
-                      class_weight=None, max_q_size=10, nb_worker=1, pickle_safe=False, **kwargs):
+                      class_weight=None, max_q_size=10, nb_worker=1,
+                      pickle_safe=False, initial_epoch=0, **kwargs):
         '''Fits the model on data generated batch-by-batch by
         a Python generator.
         The generator is run in parallel to the model, for efficiency.
@@ -630,9 +873,11 @@ class Sequential(Model):
             max_q_size: maximum size for the generator queue
             nb_worker: maximum number of processes to spin up
             pickle_safe: if True, use process based threading. Note that because
-                this implementation relies on multiprocessing, you should not pass non
+                this implementation relies on multiprocessing, you should not pass
                 non picklable arguments to the generator as they can't be passed
                 easily to children processes.
+            initial_epoch: epoch at which to start training
+                (useful for resuming a previous training run)
 
         # Returns
             A `History` object.
@@ -655,9 +900,11 @@ class Sequential(Model):
         ```
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if nb_worker > 1 and not pickle_safe:
-            warnings.warn('The "nb_worker" argument is deprecated when pickle_safe is False')
+            warnings.warn('The "nb_worker" argument is deprecated '
+                          'when pickle_safe is False')
             nb_worker = 1  # For backward compatibility
         if 'show_accuracy' in kwargs:
             kwargs.pop('show_accuracy')
@@ -671,7 +918,7 @@ class Sequential(Model):
             warnings.warn('The "nb_val_worker" argument is deprecated, '
                           'please remove it from your code.')
         if kwargs:
-            raise Exception('Received unknown keyword arguments: ' +
+            raise TypeError('Received unknown keyword arguments: ' +
                             str(kwargs))
         return self.model.fit_generator(generator,
                                         samples_per_epoch,
@@ -683,13 +930,16 @@ class Sequential(Model):
                                         class_weight=class_weight,
                                         max_q_size=max_q_size,
                                         nb_worker=nb_worker,
-                                        pickle_safe=pickle_safe)
+                                        pickle_safe=pickle_safe,
+                                        initial_epoch=initial_epoch)
 
-    def evaluate_generator(self, generator, val_samples, max_q_size=10, nb_worker=1, pickle_safe=False, **kwargs):
+    def evaluate_generator(self, generator, val_samples,
+                           max_q_size=10, nb_worker=1,
+                           pickle_safe=False, **kwargs):
         '''Evaluates the model on a data generator. The generator should
         return the same kind of data as accepted by `test_on_batch`.
 
-        Arguments:
+        # Arguments
             generator:
                 generator yielding tuples (inputs, targets)
                 or (inputs, targets, sample_weights)
@@ -704,9 +954,11 @@ class Sequential(Model):
                 easily to children processes.
         '''
         if self.model is None:
-            raise Exception('The model needs to be compiled before being used.')
+            raise RuntimeError('The model needs to be compiled '
+                               'before being used.')
         if nb_worker > 1 and not pickle_safe:
-            warnings.warn('The "nb_worker" argument is deprecated when pickle_safe is False')
+            warnings.warn('The "nb_worker" argument is deprecated '
+                          'when pickle_safe is False')
             nb_worker = 1  # For backward compatibility
         if 'show_accuracy' in kwargs:
             kwargs.pop('show_accuracy')
@@ -719,7 +971,7 @@ class Sequential(Model):
             kwargs.pop('verbose')
             warnings.warn('The "verbose" argument is deprecated.')
         if kwargs:
-            raise Exception('Received unknown keyword arguments: ' +
+            raise TypeError('Received unknown keyword arguments: ' +
                             str(kwargs))
         return self.model.evaluate_generator(generator,
                                              val_samples,
@@ -727,7 +979,8 @@ class Sequential(Model):
                                              nb_worker=nb_worker,
                                              pickle_safe=pickle_safe)
 
-    def predict_generator(self, generator, val_samples, max_q_size=10, nb_worker=1, pickle_safe=False):
+    def predict_generator(self, generator, val_samples,
+                          max_q_size=10, nb_worker=1, pickle_safe=False):
         '''Generates predictions for the input samples from a data generator.
         The generator should return the same kind of data as accepted by
         `predict_on_batch`.
@@ -749,7 +1002,8 @@ class Sequential(Model):
         if self.model is None:
             self.build()
         if nb_worker > 1 and not pickle_safe:
-            warnings.warn('The "nb_worker" argument is deprecated when pickle_safe is False')
+            warnings.warn('The "nb_worker" argument is deprecated '
+                          'when pickle_safe is False')
             nb_worker = 1  # For backward compatibility
         return self.model.predict_generator(generator, val_samples,
                                             max_q_size=max_q_size,
@@ -761,7 +1015,7 @@ class Sequential(Model):
         as a Python list.
         '''
         config = []
-        if self.layers[0].__class__.__name__ == 'Merge':
+        if isinstance(self.layers[0], Merge):
             assert hasattr(self.layers[0], 'layers')
             layers = []
             for layer in self.layers[0].layers:
@@ -785,7 +1039,6 @@ class Sequential(Model):
         '''
         from keras.utils.layer_utils import layer_from_config
         from keras.layers import Merge
-        assert type(config) is list
 
         if not layer_cache:
             layer_cache = {}

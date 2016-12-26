@@ -1,5 +1,5 @@
 from ..engine import Layer, InputSpec
-from .. import initializations
+from .. import initializations, regularizers
 from .. import backend as K
 
 
@@ -10,6 +10,7 @@ class BatchNormalization(Layer):
 
     # Arguments
         epsilon: small float > 0. Fuzz parameter.
+            Theano expects epsilon >= 1e-5.
         mode: integer, 0, 1 or 2.
             - 0: feature-wise normalization.
                 Each feature map in the input will
@@ -44,6 +45,10 @@ class BatchNormalization(Layer):
             [initializations](../initializations.md)), or alternatively,
             Theano/TensorFlow function to use for weights initialization.
             This parameter is only relevant if you don't pass a `weights` argument.
+        gamma_regularizer: instance of [WeightRegularizer](../regularizers.md)
+            (eg. L1 or L2 regularization), applied to the gamma vector.
+        beta_regularizer: instance of [WeightRegularizer](../regularizers.md),
+            applied to the beta vector.
 
     # Input shape
         Arbitrary. Use the keyword argument `input_shape`
@@ -54,10 +59,11 @@ class BatchNormalization(Layer):
         Same shape as input.
 
     # References
-        - [Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift](http://jmlr.org/proceedings/papers/v37/ioffe15.html)
+        - [Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift](http://jmlr.org/proceedings/papers/v37/ioffe15.pdf)
     '''
-    def __init__(self, epsilon=1e-6, mode=0, axis=-1, momentum=0.99,
-                 weights=None, beta_init='zero', gamma_init='one', **kwargs):
+    def __init__(self, epsilon=1e-3, mode=0, axis=-1, momentum=0.99,
+                 weights=None, beta_init='zero', gamma_init='one',
+                 gamma_regularizer=None, beta_regularizer=None, **kwargs):
         self.supports_masking = True
         self.beta_init = initializations.get(beta_init)
         self.gamma_init = initializations.get(gamma_init)
@@ -65,6 +71,8 @@ class BatchNormalization(Layer):
         self.mode = mode
         self.axis = axis
         self.momentum = momentum
+        self.gamma_regularizer = regularizers.get(gamma_regularizer)
+        self.beta_regularizer = regularizers.get(beta_regularizer)
         self.initial_weights = weights
         if self.mode == 0:
             self.uses_learning_phase = True
@@ -74,55 +82,43 @@ class BatchNormalization(Layer):
         self.input_spec = [InputSpec(shape=input_shape)]
         shape = (input_shape[self.axis],)
 
-        self.gamma = self.gamma_init(shape, name='{}_gamma'.format(self.name))
-        self.beta = self.beta_init(shape, name='{}_beta'.format(self.name))
-        self.trainable_weights = [self.gamma, self.beta]
-
-        self.running_mean = K.zeros(shape,
-                                    name='{}_running_mean'.format(self.name))
-        self.running_std = K.ones(shape,
-                                  name='{}_running_std'.format(self.name))
-        self.non_trainable_weights = [self.running_mean, self.running_std]
+        self.gamma = self.add_weight(shape,
+                                     initializer=self.gamma_init,
+                                     regularizer=self.gamma_regularizer,
+                                     name='{}_gamma'.format(self.name))
+        self.beta = self.add_weight(shape,
+                                    initializer=self.beta_init,
+                                    regularizer=self.beta_regularizer,
+                                    name='{}_beta'.format(self.name))
+        self.running_mean = self.add_weight(shape, initializer='zero',
+                                            name='{}_running_mean'.format(self.name),
+                                            trainable=False)
+        self.running_std = self.add_weight(shape, initializer='one',
+                                           name='{}_running_std'.format(self.name),
+                                           trainable=False)
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             del self.initial_weights
         self.built = True
-        self.called_with = None
 
     def call(self, x, mask=None):
         if self.mode == 0 or self.mode == 2:
             assert self.built, 'Layer must be built before being called'
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
 
             reduction_axes = list(range(len(input_shape)))
             del reduction_axes[self.axis]
             broadcast_shape = [1] * len(input_shape)
             broadcast_shape[self.axis] = input_shape[self.axis]
 
-            if self.mode == 2:
-                x_normed, mean, std = K.normalize_batch_in_training(
-                    x, self.gamma, self.beta, reduction_axes,
-                    epsilon=self.epsilon)
-            else:
-                # mode 0
-                if self.called_with not in {None, x}:
-                    raise Exception('You are attempting to share a '
-                                    'same `BatchNormalization` layer across '
-                                    'different data flows. '
-                                    'This is not possible. '
-                                    'You should use `mode=2` in '
-                                    '`BatchNormalization`, which has '
-                                    'a similar behavior but is shareable '
-                                    '(see docs for a description of '
-                                    'the behavior).')
-                self.called_with = x
-                x_normed, mean, std = K.normalize_batch_in_training(
-                    x, self.gamma, self.beta, reduction_axes,
-                    epsilon=self.epsilon)
+            x_normed, mean, std = K.normalize_batch_in_training(
+                x, self.gamma, self.beta, reduction_axes,
+                epsilon=self.epsilon)
 
-                self.updates = [K.moving_average_update(self.running_mean, mean, self.momentum),
-                                K.moving_average_update(self.running_std, std, self.momentum)]
+            if self.mode == 0:
+                self.add_update([K.moving_average_update(self.running_mean, mean, self.momentum),
+                                 K.moving_average_update(self.running_std, std, self.momentum)], x)
 
                 if sorted(reduction_axes) == range(K.ndim(x))[:-1]:
                     x_normed_running = K.batch_normalization(
@@ -152,9 +148,11 @@ class BatchNormalization(Layer):
         return x_normed
 
     def get_config(self):
-        config = {"epsilon": self.epsilon,
-                  "mode": self.mode,
-                  "axis": self.axis,
-                  "momentum": self.momentum}
+        config = {'epsilon': self.epsilon,
+                  'mode': self.mode,
+                  'axis': self.axis,
+                  'gamma_regularizer': self.gamma_regularizer.get_config() if self.gamma_regularizer else None,
+                  'beta_regularizer': self.beta_regularizer.get_config() if self.beta_regularizer else None,
+                  'momentum': self.momentum}
         base_config = super(BatchNormalization, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))

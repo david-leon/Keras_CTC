@@ -4,7 +4,7 @@
 - [How can I run Keras on GPU?](#how-can-i-run-keras-on-gpu)
 - [How can I save a Keras model?](#how-can-i-save-a-keras-model)
 - [Why is the training loss much higher than the testing loss?](#why-is-the-training-loss-much-higher-than-the-testing-loss)
-- [How can I visualize the output of an intermediate layer?](#how-can-i-visualize-the-output-of-an-intermediate-layer)
+- [How can I obtain the output of an intermediate layer?](#how-can-i-obtain-the-output-of-an-intermediate-layer)
 - [How can I use Keras with datasets that don't fit in memory?](#how-can-i-use-keras-with-datasets-that-dont-fit-in-memory)
 - [How can I interrupt training when the validation loss isn't decreasing anymore?](#how-can-i-interrupt-training-when-the-validation-loss-isnt-decreasing-anymore)
 - [How is the validation split computed?](#how-is-the-validation-split-computed)
@@ -58,7 +58,31 @@ theano.config.floatX = 'float32'
 
 *It is not recommended to use pickle or cPickle to save a Keras model.*
 
-If you only need to save the architecture of a model, and not its weights, you can do:
+You can use `model.save(filepath)` to save a Keras model into a single HDF5 file which will contain:
+
+- the architecture of the model, allowing to re-create the model
+- the weights of the model
+- the training configuration (loss, optimizer)
+- the state of the optimizer, allowing to resume training exactly where you left off.
+
+You can then use `keras.models.load_model(filepath)` to reinstantiate your model.
+`load_model` will also take care of compiling the model using the saved training configuration
+(unless the model was never compiled in the first place).
+
+Example:
+
+```python
+from keras.models import load_model
+
+model.save('my_model.h5')  # creates a HDF5 file 'my_model.h5'
+del model  # deletes the existing model
+
+# returns a compiled model
+# identical to the previous one
+model = load_model('my_model.h5')
+```
+
+If you only need to save the **architecture of a model**, and not its weights or its training configuration, you can do:
 
 ```python
 # save as JSON
@@ -67,6 +91,8 @@ json_string = model.to_json()
 # save as YAML
 yaml_string = model.to_yaml()
 ```
+
+The generated JSON / YAML files are human-readable and can be manually edited if needed.
 
 You can then build a fresh model from this data:
 
@@ -79,7 +105,7 @@ model = model_from_json(json_string)
 model = model_from_yaml(yaml_string)
 ```
 
-If you need to save the weights of a model, you can do so in HDF5 with the code below.
+If you need to save the **weights of a model**, you can do so in HDF5 with the code below.
 
 Note that you will first need to install HDF5 and the Python library h5py, which do not come bundled with Keras.
 
@@ -87,26 +113,37 @@ Note that you will first need to install HDF5 and the Python library h5py, which
 model.save_weights('my_model_weights.h5')
 ```
 
-Assuming you have code for instantiating your model, you can then load the weights you saved into a model with the same architecture:
+Assuming you have code for instantiating your model, you can then load the weights you saved into a model with the *same* architecture:
 
 ```python
 model.load_weights('my_model_weights.h5')
 ```
 
-This leads us to a way to save and reconstruct models from only serialized data:
-```python
-json_string = model.to_json()
-open('my_model_architecture.json', 'w').write(json_string)
-model.save_weights('my_model_weights.h5')
+If you need to load weights into a *different* architecture (with some layers in common), for instance for fine-tuning or transfer-learning, you can load weights by *layer name*:
 
-# elsewhere...
-model = model_from_json(open('my_model_architecture.json').read())
-model.load_weights('my_model_weights.h5')
+```python
+model.load_weights('my_model_weights.h5', by_name=True)
 ```
 
-Finally, before it can be used, the model shall be compiled.
+For example:
+
 ```python
-model.compile(optimizer='adagrad', loss='mse')
+"""
+Assume original model looks like this:
+    model = Sequential()
+    model.add(Dense(2, input_dim=3, name="dense_1"))
+    model.add(Dense(3, name="dense_2"))
+    ...
+    model.save_weights(fname)
+"""
+
+# new model
+model = Sequential()
+model.add(Dense(2, input_dim=3, name="dense_1"))  # will be loaded
+model.add(Dense(10, name="new_dense"))  # will not be loaded
+
+# load weights from first model; will only affect the first layer, dense_1.
+model.load_weights(fname, by_name=True)
 ```
 
 ---
@@ -119,9 +156,22 @@ Besides, the training loss is the average of the losses over each batch of train
 
 ---
 
-### How can I visualize the output of an intermediate layer?
+### How can I obtain the output of an intermediate layer?
 
-You can build a Keras function that will return the output of a certain layer given a certain input, for example:
+One simple way is to create a new `Model` that will output the layers that you are interested in:
+
+```python
+from keras.models import Model
+
+model = ...  # create the original model
+
+layer_name = 'my_layer'
+intermediate_layer_model = Model(input=model.input,
+                                 output=model.get_layer(layer_name).output)
+intermediate_output = intermediate_layer_model.predict(data)
+```
+
+Alternatively, you can build a Keras function that will return the output of a certain layer given a certain input, for example:
 
 ```python
 from keras import backend as K
@@ -146,22 +196,6 @@ layer_output = get_3rd_layer_output([X, 0])[0]
 
 # output in train mode = 1
 layer_output = get_3rd_layer_output([X, 1])[0]
-```
-
-Another more flexible way of getting output from intermediate layers is to use the [functional API](/getting-started/functional-api-guide). For example, if you have created an autoencoder for MNIST:
-
-```python
-inputs = Input(shape=(784,))
-encoded = Dense(32, activation='relu')(inputs)
-decoded = Dense(784)(encoded)
-model = Model(input=inputs, output=decoded)
-```
-
-After compiling and training the model, you can get the output of the data from the encoder like this:
-
-```python
-encoder = Model(input=inputs, output=encoded)
-X_encoded = encoder.predict(X)
 ```
 
 ---
@@ -192,8 +226,9 @@ Find out more in the [callbacks documentation](/callbacks).
 
 ### How is the validation split computed?
 
-If you set the `validation_split` argument in `model.fit` to e.g. 0.1, then the validation data used will be the *last 10%* of the data. If you set it to 0.25, it will be the last 25% of the data, etc.
+If you set the `validation_split` argument in `model.fit` to e.g. 0.1, then the validation data used will be the *last 10%* of the data. If you set it to 0.25, it will be the last 25% of the data, etc. Note that the data isn't shuffled before extracting the validation split, so the validation is literally just the *last* x% of samples in the input you passed.
 
+The same validation set is used for all epochs (within a same call to `fit`).
 
 ---
 
@@ -321,13 +356,27 @@ print(len(model.layers))  # "1"
 
 Code and pre-trained weights are available for the following image classification models:
 
-- [VGG-16](https://gist.github.com/baraldilorenzo/07d7802847aaad0a35d3)
-- [VGG-19](https://gist.github.com/baraldilorenzo/8d096f48a1be4a2d660d)
-- [AlexNet](https://github.com/heuritech/convnets-keras)
+- VGG16
+- VGG19
+- ResNet50
+- Inception v3
 
-For an example of how to use such a pre-trained model for feature extraction or for fine-tuning, see [this blog post](http://blog.keras.io/building-powerful-image-classification-models-using-very-little-data.html).
+They can be imported from the module `keras.applications`:
 
-The VGG-16 model is also the basis for several Keras example scripts:
+```python
+from keras.applications.vgg16 import VGG16
+from keras.applications.vgg19 import VGG19
+from keras.applications.resnet50 import ResNet50
+from keras.applications.inception_v3 import InceptionV3
+
+model = VGG16(weights='imagenet', include_top=True)
+```
+
+For a few simple usage examples, see [the documentation for the Applications module](/applications).
+
+For a detailed example of how to use such a pre-trained model for feature extraction or for fine-tuning, see [this blog post](http://blog.keras.io/building-powerful-image-classification-models-using-very-little-data.html).
+
+The VGG16 model is also the basis for several Keras example scripts:
 
 - [Style transfer](https://github.com/fchollet/keras/blob/master/examples/neural_style_transfer.py)
 - [Feature visualization](https://github.com/fchollet/keras/blob/master/examples/conv_filter_visualization.py)

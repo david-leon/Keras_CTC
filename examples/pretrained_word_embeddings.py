@@ -22,6 +22,7 @@ from keras.utils.np_utils import to_categorical
 from keras.layers import Dense, Input, Flatten
 from keras.layers import Conv1D, MaxPooling1D, Embedding
 from keras.models import Model
+import sys
 
 BASE_DIR = ''
 GLOVE_DIR = BASE_DIR + '/glove.6B/'
@@ -61,7 +62,10 @@ for name in sorted(os.listdir(TEXT_DATA_DIR)):
         for fname in sorted(os.listdir(path)):
             if fname.isdigit():
                 fpath = os.path.join(path, fname)
-                f = open(fpath)
+                if sys.version_info < (3,):
+                    f = open(fpath)
+                else:
+                    f = open(fpath, encoding='latin-1')
                 texts.append(f.read())
                 f.close()
                 labels.append(label_id)
@@ -97,8 +101,11 @@ y_val = labels[-nb_validation_samples:]
 print('Preparing embedding matrix.')
 
 # prepare embedding matrix
-embedding_matrix = np.zeros((len(word_index) + 1, EMBEDDING_DIM))
+nb_words = min(MAX_NB_WORDS, len(word_index))
+embedding_matrix = np.zeros((nb_words + 1, EMBEDDING_DIM))
 for word, i in word_index.items():
+    if i > MAX_NB_WORDS:
+        continue
     embedding_vector = embeddings_index.get(word)
     if embedding_vector is not None:
         # words not found in embedding index will be all-zeros.
@@ -106,7 +113,7 @@ for word, i in word_index.items():
 
 # load pre-trained word embeddings into an Embedding layer
 # note that we set trainable = False so as to keep the embeddings fixed
-embedding_layer = Embedding(len(word_index) + 1,
+embedding_layer = Embedding(nb_words + 1,
                             EMBEDDING_DIM,
                             weights=[embedding_matrix],
                             input_length=MAX_SEQUENCE_LENGTH,

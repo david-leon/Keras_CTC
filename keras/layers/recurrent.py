@@ -12,13 +12,10 @@ def time_distributed_dense(x, w, b=None, dropout=None,
     '''Apply y.w + b for every temporal slice y of x.
     '''
     if not input_dim:
-        # won't work with TensorFlow
         input_dim = K.shape(x)[2]
     if not timesteps:
-        # won't work with TensorFlow
         timesteps = K.shape(x)[1]
     if not output_dim:
-        # won't work with TensorFlow
         output_dim = K.shape(w)[1]
 
     if dropout is not None and 0. < dropout < 1.:
@@ -30,12 +27,15 @@ def time_distributed_dense(x, w, b=None, dropout=None,
 
     # collapse time dimension and batch dimension together
     x = K.reshape(x, (-1, input_dim))
-
     x = K.dot(x, w)
     if b:
         x = x + b
     # reshape to 3D tensor
-    x = K.reshape(x, (-1, timesteps, output_dim))
+    if K.backend() == 'tensorflow':
+        x = K.reshape(x, K.stack([-1, timesteps, output_dim]))
+        x.set_shape([None, None, output_dim])
+    else:
+        x = K.reshape(x, (-1, timesteps, output_dim))
     return x
 
 
@@ -120,14 +120,10 @@ class Recurrent(Layer):
         use an [Embedding](embeddings.md) layer with the `mask_zero` parameter
         set to `True`.
 
-    # TensorFlow warning
-        For the time being, when using the TensorFlow backend,
-        the number of timesteps used must be specified in your model.
-        Make sure to pass an `input_length` int argument to your
-        recurrent layer (if it comes first in your model),
-        or to pass a complete `input_shape` argument to the first layer
-        in your model otherwise.
-
+    # Note on performance
+        You are likely to see better performance with RNNs in Theano compared
+        to TensorFlow. Additionally, when using TensorFlow, it is often
+        preferable to set `unroll=True` for better performance.
 
     # Note on using statefulness in RNNs
         You can set RNN layers to be 'stateful', which means that the states
@@ -139,16 +135,15 @@ class Recurrent(Layer):
         To enable statefulness:
             - specify `stateful=True` in the layer constructor.
             - specify a fixed batch size for your model, by passing
-                a `batch_input_shape=(...)` to the first layer in your model.
+                if sequential model:
+                  a `batch_input_shape=(...)` to the first layer in your model.
+                else for functional model with 1 or more Input layers:
+                  a `batch_shape=(...)` to all the first layers in your model.
                 This is the expected shape of your inputs *including the batch size*.
                 It should be a tuple of integers, e.g. `(32, 10, 100)`.
 
         To reset the states of your model, call `.reset_states()` on either
         a specific layer, or on your entire model.
-
-    # Note on using dropout with TensorFlow
-        When using the TensorFlow backend, specify a fixed batch size for your model
-        following the notes on statefulness RNNs.
     '''
     def __init__(self, weights=None,
                  return_sequences=False, go_backwards=False, stateful=False,
@@ -204,20 +199,19 @@ class Recurrent(Layer):
         # input shape: (nb_samples, time (padded with zeros), input_dim)
         # note that the .build() method of subclasses MUST define
         # self.input_spec with a complete input shape.
-        input_shape = self.input_spec[0].shape
-        if K._BACKEND == 'tensorflow':
-            if not input_shape[1]:
-                raise Exception('When using TensorFlow, you should define '
-                                'explicitly the number of timesteps of '
-                                'your sequences.\n'
-                                'If your first layer is an Embedding, '
-                                'make sure to pass it an "input_length" '
-                                'argument. Otherwise, make sure '
-                                'the first layer has '
-                                'an "input_shape" or "batch_input_shape" '
-                                'argument, including the time axis. '
-                                'Found input shape at layer ' + self.name +
-                                ': ' + str(input_shape))
+        input_shape = K.int_shape(x)
+        if self.unroll and input_shape[1] is None:
+            raise ValueError('Cannot unroll a RNN if the '
+                             'time dimension is undefined. \n'
+                             '- If using a Sequential model, '
+                             'specify the time dimension by passing '
+                             'an `input_shape` or `batch_input_shape` '
+                             'argument to your first layer. If your '
+                             'first layer is an Embedding, you can '
+                             'also use the `input_length` argument.\n'
+                             '- If using the functional API, specify '
+                             'the time dimension by passing a `shape` '
+                             'or `batch_shape` argument to your Input layer.')
         if self.stateful:
             initial_states = self.states
         else:
@@ -233,9 +227,10 @@ class Recurrent(Layer):
                                              unroll=self.unroll,
                                              input_length=input_shape[1])
         if self.stateful:
-            self.updates = []
+            updates = []
             for i in range(len(states)):
-                self.updates.append((self.states[i], states[i]))
+                updates.append((self.states[i], states[i]))
+            self.add_update(updates, x)
 
         if self.return_sequences:                    # [DV] add 'keep_time_order' param for backward RNN
             if self.go_backwards == True and 'keep_time_order' in self.kwargs and self.kwargs['keep_time_order'] == True:
@@ -251,7 +246,7 @@ class Recurrent(Layer):
                   'stateful': self.stateful,
                   'unroll': self.unroll,
                   'consume_less': self.consume_less}
-        if self.stateful:
+        if self.stateful and self.input_spec[0].shape:
             config['batch_input_shape'] = self.input_spec[0].shape
         else:
             config['input_dim'] = self.input_dim
@@ -297,7 +292,8 @@ class SimpleRNN(Recurrent):
         self.W_regularizer = regularizers.get(W_regularizer)
         self.U_regularizer = regularizers.get(U_regularizer)
         self.b_regularizer = regularizers.get(b_regularizer)
-        self.dropout_W, self.dropout_U = dropout_W, dropout_U
+        self.dropout_W = dropout_W
+        self.dropout_U = dropout_U
 
         if self.dropout_W or self.dropout_U:
             self.uses_learning_phase = True
@@ -313,35 +309,38 @@ class SimpleRNN(Recurrent):
         input_dim = input_shape[2]
         self.input_dim = input_dim
 
-        self.W = self.init((input_dim, self.output_dim),
-                           name='{}_W'.format(self.name))
-        self.U = self.inner_init((self.output_dim, self.output_dim),
-                                 name='{}_U'.format(self.name))
-        self.b = K.zeros((self.output_dim,), name='{}_b'.format(self.name))
-
-        self.regularizers = []
-        if self.W_regularizer:
-            self.W_regularizer.set_param(self.W)
-            self.regularizers.append(self.W_regularizer)
-        if self.U_regularizer:
-            self.U_regularizer.set_param(self.U)
-            self.regularizers.append(self.U_regularizer)
-        if self.b_regularizer:
-            self.b_regularizer.set_param(self.b)
-            self.regularizers.append(self.b_regularizer)
-
-        self.trainable_weights = [self.W, self.U, self.b]
+        self.W = self.add_weight((input_dim, self.output_dim),
+                                 initializer=self.init,
+                                 name='{}_W'.format(self.name),
+                                 regularizer=self.W_regularizer)
+        self.U = self.add_weight((self.output_dim, self.output_dim),
+                                 initializer=self.inner_init,
+                                 name='{}_U'.format(self.name),
+                                 regularizer=self.U_regularizer)
+        self.b = self.add_weight((self.output_dim,),
+                                 initializer='zero',
+                                 name='{}_b'.format(self.name),
+                                 regularizer=self.b_regularizer)
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             del self.initial_weights
+        self.built = True
 
     def reset_states(self):
         assert self.stateful, 'Layer must be stateful.'
         input_shape = self.input_spec[0].shape
         if not input_shape[0]:
-            raise Exception('If a RNN is stateful, a complete ' +
-                            'input_shape must be provided (including batch size).')
+            raise ValueError('If a RNN is stateful, it needs to know '
+                             'its batch size. Specify the batch size '
+                             'of your input tensors: \n'
+                             '- If using a Sequential model, '
+                             'specify the batch size by passing '
+                             'a `batch_input_shape` '
+                             'argument to your first layer.\n'
+                             '- If using the functional API, specify '
+                             'the time dimension by passing a '
+                             '`batch_shape` argument to your Input layer.')
         if hasattr(self, 'states'):
             K.set_value(self.states[0],
                         np.zeros((input_shape[0], self.output_dim)))
@@ -350,7 +349,7 @@ class SimpleRNN(Recurrent):
 
     def preprocess_input(self, x):
         if self.consume_less == 'cpu':
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[2]
             timesteps = input_shape[1]
             return time_distributed_dense(x, self.W, self.b, self.dropout_W,
@@ -376,16 +375,16 @@ class SimpleRNN(Recurrent):
         constants = []
         if 0 < self.dropout_U < 1:
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * self.output_dim, 1)
+            ones = K.tile(ones, (1, self.output_dim))
             B_U = K.in_train_phase(K.dropout(ones, self.dropout_U), ones)
             constants.append(B_U)
         else:
             constants.append(K.cast_to_floatx(1.))
         if self.consume_less == 'cpu' and 0 < self.dropout_W < 1:
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[-1]
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * input_dim, 1)
+            ones = K.tile(ones, (1, int(input_dim)))
             B_W = K.in_train_phase(K.dropout(ones, self.dropout_W), ones)
             constants.append(B_W)
         else:
@@ -429,7 +428,7 @@ class GRU(Recurrent):
         dropout_U: float between 0 and 1. Fraction of the input units to drop for recurrent connections.
 
     # References
-        - [On the Properties of Neural Machine Translation: Encoder–Decoder Approaches](http://www.aclweb.org/anthology/W14-4012)
+        - [On the Properties of Neural Machine Translation: Encoder-Decoder Approaches](http://www.aclweb.org/anthology/W14-4012)
         - [Empirical Evaluation of Gated Recurrent Neural Networks on Sequence Modeling](http://arxiv.org/pdf/1412.3555v1.pdf)
         - [A Theoretically Grounded Application of Dropout in Recurrent Neural Networks](http://arxiv.org/abs/1512.05287)
     '''
@@ -446,7 +445,8 @@ class GRU(Recurrent):
         self.W_regularizer = regularizers.get(W_regularizer)
         self.U_regularizer = regularizers.get(U_regularizer)
         self.b_regularizer = regularizers.get(b_regularizer)
-        self.dropout_W, self.dropout_U = dropout_W, dropout_U
+        self.dropout_W = dropout_W
+        self.dropout_U = dropout_U
 
         if self.dropout_W or self.dropout_U:
             self.uses_learning_phase = True
@@ -463,67 +463,70 @@ class GRU(Recurrent):
             self.states = [None]
 
         if self.consume_less == 'gpu':
-
-            self.W = self.init((self.input_dim, 3 * self.output_dim),
-                               name='{}_W'.format(self.name))
-            self.U = self.inner_init((self.output_dim, 3 * self.output_dim),
-                                     name='{}_U'.format(self.name))
-
-            self.b = K.variable(np.hstack((np.zeros(self.output_dim),
-                                           np.zeros(self.output_dim),
-                                           np.zeros(self.output_dim))),
-                                name='{}_b'.format(self.name))
-
-            self.trainable_weights = [self.W, self.U, self.b]
+            self.W = self.add_weight((self.input_dim, 3 * self.output_dim),
+                                     initializer=self.init,
+                                     name='{}_W'.format(self.name),
+                                     regularizer=self.W_regularizer)
+            self.U = self.add_weight((self.output_dim, 3 * self.output_dim),
+                                     initializer=self.inner_init,
+                                     name='{}_U'.format(self.name),
+                                     regularizer=self.U_regularizer)
+            self.b = self.add_weight((self.output_dim * 3,),
+                                     initializer='zero',
+                                     name='{}_b'.format(self.name),
+                                     regularizer=self.b_regularizer)
         else:
-
-            self.W_z = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_z'.format(self.name))
-            self.U_z = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_z'.format(self.name))
-            self.b_z = K.zeros((self.output_dim,), name='{}_b_z'.format(self.name))
-
-            self.W_r = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_r'.format(self.name))
-            self.U_r = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_r'.format(self.name))
-            self.b_r = K.zeros((self.output_dim,), name='{}_b_r'.format(self.name))
-
-            self.W_h = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_h'.format(self.name))
-            self.U_h = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_h'.format(self.name))
-            self.b_h = K.zeros((self.output_dim,), name='{}_b_h'.format(self.name))
-
-            self.trainable_weights = [self.W_z, self.U_z, self.b_z,
-                                      self.W_r, self.U_r, self.b_r,
-                                      self.W_h, self.U_h, self.b_h]
-
+            self.W_z = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_z'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_z = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_z'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_z = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_z'.format(self.name),
+                                       regularizer=self.b_regularizer)
+            self.W_r = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_r'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_r = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_r'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_r = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_r'.format(self.name),
+                                       regularizer=self.b_regularizer)
+            self.W_h = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_h'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_h = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_h'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_h = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_h'.format(self.name),
+                                       regularizer=self.b_regularizer)
             self.W = K.concatenate([self.W_z, self.W_r, self.W_h])
             self.U = K.concatenate([self.U_z, self.U_r, self.U_h])
             self.b = K.concatenate([self.b_z, self.b_r, self.b_h])
 
-        self.regularizers = []
-        if self.W_regularizer:
-            self.W_regularizer.set_param(self.W)
-            self.regularizers.append(self.W_regularizer)
-        if self.U_regularizer:
-            self.U_regularizer.set_param(self.U)
-            self.regularizers.append(self.U_regularizer)
-        if self.b_regularizer:
-            self.b_regularizer.set_param(self.b)
-            self.regularizers.append(self.b_regularizer)
-
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             del self.initial_weights
+        self.built = True
 
     def reset_states(self):
         assert self.stateful, 'Layer must be stateful.'
         input_shape = self.input_spec[0].shape
         if not input_shape[0]:
-            raise Exception('If a RNN is stateful, a complete ' +
-                            'input_shape must be provided (including batch size).')
+            raise ValueError('If a RNN is stateful, a complete ' +
+                             'input_shape must be provided (including batch size).')
         if hasattr(self, 'states'):
             K.set_value(self.states[0],
                         np.zeros((input_shape[0], self.output_dim)))
@@ -532,7 +535,7 @@ class GRU(Recurrent):
 
     def preprocess_input(self, x):
         if self.consume_less == 'cpu':
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[2]
             timesteps = input_shape[1]
 
@@ -577,7 +580,7 @@ class GRU(Recurrent):
                 x_r = K.dot(x * B_W[1], self.W_r) + self.b_r
                 x_h = K.dot(x * B_W[2], self.W_h) + self.b_h
             else:
-                raise Exception('Unknown `consume_less` mode.')
+                raise ValueError('Unknown `consume_less` mode.')
             z = self.inner_activation(x_z + K.dot(h_tm1 * B_U[0], self.U_z))
             r = self.inner_activation(x_r + K.dot(h_tm1 * B_U[1], self.U_r))
 
@@ -589,17 +592,17 @@ class GRU(Recurrent):
         constants = []
         if 0 < self.dropout_U < 1:
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * self.output_dim, 1)
+            ones = K.tile(ones, (1, self.output_dim))
             B_U = [K.in_train_phase(K.dropout(ones, self.dropout_U), ones) for _ in range(3)]
             constants.append(B_U)
         else:
             constants.append([K.cast_to_floatx(1.) for _ in range(3)])
 
         if 0 < self.dropout_W < 1:
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[-1]
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * input_dim, 1)
+            ones = K.tile(ones, (1, int(input_dim)))
             B_W = [K.in_train_phase(K.dropout(ones, self.dropout_W), ones) for _ in range(3)]
             constants.append(B_W)
         else:
@@ -652,7 +655,7 @@ class LSTM(Recurrent):
     # References
         - [Long short-term memory](http://deeplearning.cs.cmu.edu/pdfs/Hochreiter97_lstm.pdf) (original 1997 paper)
         - [Learning to forget: Continual prediction with LSTM](http://www.mitpressjournals.org/doi/pdf/10.1162/089976600300015015)
-        - [Supervised sequence labelling with recurrent neural networks](http://www.cs.toronto.edu/~graves/preprint.pdf)
+        - [Supervised sequence labeling with recurrent neural networks](http://www.cs.toronto.edu/~graves/preprint.pdf)
         - [A Theoretically Grounded Application of Dropout in Recurrent Neural Networks](http://arxiv.org/abs/1512.05287)
     '''
     def __init__(self, output_dim,
@@ -670,7 +673,8 @@ class LSTM(Recurrent):
         self.W_regularizer = regularizers.get(W_regularizer)
         self.U_regularizer = regularizers.get(U_regularizer)
         self.b_regularizer = regularizers.get(b_regularizer)
-        self.dropout_W, self.dropout_U = dropout_W, dropout_U
+        self.dropout_W = dropout_W
+        self.dropout_U = dropout_U
 
         if self.dropout_W or self.dropout_U:
             self.uses_learning_phase = True
@@ -687,73 +691,94 @@ class LSTM(Recurrent):
             self.states = [None, None]
 
         if self.consume_less == 'gpu':
-            self.W = self.init((self.input_dim, 4 * self.output_dim),
-                               name='{}_W'.format(self.name))
-            self.U = self.inner_init((self.output_dim, 4 * self.output_dim),
-                                     name='{}_U'.format(self.name))
+            self.W = self.add_weight((self.input_dim, 4 * self.output_dim),
+                                     initializer=self.init,
+                                     name='{}_W'.format(self.name),
+                                     regularizer=self.W_regularizer)
+            self.U = self.add_weight((self.output_dim, 4 * self.output_dim),
+                                     initializer=self.inner_init,
+                                     name='{}_U'.format(self.name),
+                                     regularizer=self.U_regularizer)
 
-            self.b = K.variable(np.hstack((np.zeros(self.output_dim),
-                                           K.get_value(self.forget_bias_init((self.output_dim,))),
-                                           np.zeros(self.output_dim),
-                                           np.zeros(self.output_dim))),
-                                name='{}_b'.format(self.name))
-            self.trainable_weights = [self.W, self.U, self.b]
+            def b_reg(shape, name=None):
+                return K.variable(np.hstack((np.zeros(self.output_dim),
+                                             K.get_value(self.forget_bias_init((self.output_dim,))),
+                                             np.zeros(self.output_dim),
+                                             np.zeros(self.output_dim))),
+                                  name='{}_b'.format(self.name))
+            self.b = self.add_weight((self.output_dim * 4,),
+                                     initializer=b_reg,
+                                     name='{}_b'.format(self.name),
+                                     regularizer=self.b_regularizer)
         else:
-            self.W_i = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_i'.format(self.name))
-            self.U_i = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_i'.format(self.name))
-            self.b_i = K.zeros((self.output_dim,), name='{}_b_i'.format(self.name))
-
-            self.W_f = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_f'.format(self.name))
-            self.U_f = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_f'.format(self.name))
-            self.b_f = self.forget_bias_init((self.output_dim,),
-                                             name='{}_b_f'.format(self.name))
-
-            self.W_c = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_c'.format(self.name))
-            self.U_c = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_c'.format(self.name))
-            self.b_c = K.zeros((self.output_dim,), name='{}_b_c'.format(self.name))
-
-            self.W_o = self.init((self.input_dim, self.output_dim),
-                                 name='{}_W_o'.format(self.name))
-            self.U_o = self.inner_init((self.output_dim, self.output_dim),
-                                       name='{}_U_o'.format(self.name))
-            self.b_o = K.zeros((self.output_dim,), name='{}_b_o'.format(self.name))
+            self.W_i = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_i'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_i = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_i'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_i = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_i'.format(self.name),
+                                       regularizer=self.b_regularizer)
+            self.W_f = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_f'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_f = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_f'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_f = self.add_weight((self.output_dim,),
+                                       initializer=self.forget_bias_init,
+                                       name='{}_b_f'.format(self.name),
+                                       regularizer=self.b_regularizer)
+            self.W_c = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_c'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_c = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_c'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_c = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_c'.format(self.name),
+                                       regularizer=self.b_regularizer)
+            self.W_o = self.add_weight((self.input_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_W_o'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.U_o = self.add_weight((self.output_dim, self.output_dim),
+                                       initializer=self.init,
+                                       name='{}_U_o'.format(self.name),
+                                       regularizer=self.W_regularizer)
+            self.b_o = self.add_weight((self.output_dim,),
+                                       initializer='zero',
+                                       name='{}_b_o'.format(self.name),
+                                       regularizer=self.b_regularizer)
 
             self.trainable_weights = [self.W_i, self.U_i, self.b_i,
                                       self.W_c, self.U_c, self.b_c,
                                       self.W_f, self.U_f, self.b_f,
                                       self.W_o, self.U_o, self.b_o]
-
             self.W = K.concatenate([self.W_i, self.W_f, self.W_c, self.W_o])
             self.U = K.concatenate([self.U_i, self.U_f, self.U_c, self.U_o])
             self.b = K.concatenate([self.b_i, self.b_f, self.b_c, self.b_o])
 
-        self.regularizers = []
-        if self.W_regularizer:
-            self.W_regularizer.set_param(self.W)
-            self.regularizers.append(self.W_regularizer)
-        if self.U_regularizer:
-            self.U_regularizer.set_param(self.U)
-            self.regularizers.append(self.U_regularizer)
-        if self.b_regularizer:
-            self.b_regularizer.set_param(self.b)
-            self.regularizers.append(self.b_regularizer)
-
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
             del self.initial_weights
+        self.built = True
 
     def reset_states(self):
         assert self.stateful, 'Layer must be stateful.'
         input_shape = self.input_spec[0].shape
         if not input_shape[0]:
-            raise Exception('If a RNN is stateful, a complete ' +
-                            'input_shape must be provided (including batch size).')
+            raise ValueError('If a RNN is stateful, a complete ' +
+                             'input_shape must be provided (including batch size).')
         if hasattr(self, 'states'):
             K.set_value(self.states[0],
                         np.zeros((input_shape[0], self.output_dim)))
@@ -769,7 +794,7 @@ class LSTM(Recurrent):
                 dropout = self.dropout_W
             else:
                 dropout = 0
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[2]
             timesteps = input_shape[1]
 
@@ -815,7 +840,7 @@ class LSTM(Recurrent):
                 x_c = K.dot(x * B_W[2], self.W_c) + self.b_c
                 x_o = K.dot(x * B_W[3], self.W_o) + self.b_o
             else:
-                raise Exception('Unknown `consume_less` mode.')
+                raise ValueError('Unknown `consume_less` mode.')
 
             i = self.inner_activation(x_i + K.dot(h_tm1 * B_U[0], self.U_i))
             f = self.inner_activation(x_f + K.dot(h_tm1 * B_U[1], self.U_f))
@@ -829,17 +854,17 @@ class LSTM(Recurrent):
         constants = []
         if 0 < self.dropout_U < 1:
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * self.output_dim, 1)
+            ones = K.tile(ones, (1, self.output_dim))
             B_U = [K.in_train_phase(K.dropout(ones, self.dropout_U), ones) for _ in range(4)]
             constants.append(B_U)
         else:
             constants.append([K.cast_to_floatx(1.) for _ in range(4)])
 
         if 0 < self.dropout_W < 1:
-            input_shape = self.input_spec[0].shape
+            input_shape = K.int_shape(x)
             input_dim = input_shape[-1]
             ones = K.ones_like(K.reshape(x[:, 0, 0], (-1, 1)))
-            ones = K.concatenate([ones] * input_dim, 1)
+            ones = K.tile(ones, (1, int(input_dim)))
             B_W = [K.in_train_phase(K.dropout(ones, self.dropout_W), ones) for _ in range(4)]
             constants.append(B_W)
         else:
