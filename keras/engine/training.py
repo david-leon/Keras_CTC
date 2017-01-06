@@ -337,14 +337,14 @@ def standardize_weights(y, sample_weight=None, class_weight=None,
             raise ValueError('"sample_weight_mode '
                              'should be None or "temporal". '
                              'Found: ' + str(sample_weight_mode))
-        # if len(y.shape) < 3:                                                 # [DV] comment out for ctc
-        #     raise Exception('Found a sample_weight array for '
-        #                     'an input with shape ' +
-        #                     str(y.shape) + '. '
-        #                     'Timestep-wise sample weighting (use of '
-        #                     'sample_weight_mode="temporal") is restricted to '
-        #                     'outputs that are at least 3D, i.e. that have '
-        #                     'a time dimension.')
+        if len(y.shape) < 3:
+            raise ValueError('Found a sample_weight array for '
+                             'an input with shape ' +
+                             str(y.shape) + '. '
+                             'Timestep-wise sample weighting (use of '
+                             'sample_weight_mode="temporal") is restricted to '
+                             'outputs that are at least 3D, i.e. that have '
+                             'a time dimension.')
         if sample_weight is not None and len(sample_weight.shape) != 2:
             raise ValueError('Found a sample_weight array with shape ' +
                              str(sample_weight.shape) + '. '
@@ -524,12 +524,7 @@ class Model(Container):
             loss_function = objectives.get(loss)
             loss_functions = [loss_function for _ in range(len(self.outputs))]
         self.loss_functions = loss_functions
-        weighted_losses = []                    # [DV] add support for ctc
-        for fn in loss_functions:
-            if fn.__name__.startswith('ctc'):
-                weighted_losses.append(fn)
-            else:
-                weighted_losses.append(weighted_objective(fn))
+        weighted_losses = [weighted_objective(fn) for fn in loss_functions]
 
         # prepare output masks
         masks = self.compute_mask(self.inputs, mask=None)
@@ -537,11 +532,8 @@ class Model(Container):
             masks = [None for _ in self.outputs]
         if not isinstance(masks, list):
             masks = [masks]
-        for i in range(len(self.outputs)):                                      # [DV] reuse 'mask' as 'sm_mask' for ctc cost
-            if loss_functions[i].__name__.startswith('ctc'):
-                masks[i] = K.placeholder(ndim=2, name=self.output_names[i] + '_ctc_sm_mask')
 
-        # prepare sample weights                                                # [DV] 'sample_weight' can be used as 'seq_mask' for ctc cost
+        # prepare sample weights
         if isinstance(sample_weight_mode, dict):
             for name in sample_weight_mode:
                 if name not in self.output_names:
@@ -605,11 +597,7 @@ class Model(Container):
         for i in range(len(self.outputs)):
             shape = self.internal_output_shapes[i]
             name = self.output_names[i]
-            if self.loss_functions[i].__name__.startswith('ctc'):                        # [DV] add for ctc
-                ndim = len(shape)-1
-            else:
-                ndim = len(shape)
-            self.targets.append(K.placeholder(ndim=ndim,                                  # [DV] change len(shape) to ndim, for support of ctc
+            self.targets.append(K.placeholder(ndim=len(shape),
                                 name=name + '_target',
                                 sparse=K.is_sparse(self.outputs[i]),
                                 dtype=K.dtype(self.outputs[i])))
@@ -638,7 +626,8 @@ class Model(Container):
             else:
                 total_loss += loss_weight * output_loss
 
-        # add regularization penalties and other layer-specific losses
+        # add regularization penalties
+        # and other layer-specific losses
         for loss_tensor in self.losses:
             total_loss += loss_tensor
 
@@ -659,42 +648,38 @@ class Model(Container):
             y_pred = self.outputs[i]
             output_metrics = nested_metrics[i]
 
-            loss_identifier = loss_functions[i].__name__                # [DV] add for ctc; TODO: make 'acc' work for ctc
-            if not loss_identifier.startswith('ctc'):
-            	for metric in output_metrics:
-	                if metric == 'accuracy' or metric == 'acc':
-	                    # custom handling of accuracy
-	                    # (because of class mode duality)
-	                    output_shape = self.internal_output_shapes[i]
-	                    acc_fn = None
-	                    if output_shape[-1] == 1 or self.loss_functions[i] == objectives.binary_crossentropy:
-	                        # case: binary accuracy
-	                        acc_fn = metrics_module.binary_accuracy
-	                    elif self.loss_functions[i] == objectives.sparse_categorical_crossentropy:
-	                        # case: categorical accuracy with sparse targets
-	                        acc_fn = metrics_module.sparse_categorical_accuracy
-	                    else:
-	                        acc_fn = metrics_module.categorical_accuracy
+            for metric in output_metrics:
+                if metric == 'accuracy' or metric == 'acc':
+                    # custom handling of accuracy
+                    # (because of class mode duality)
+                    output_shape = self.internal_output_shapes[i]
+                    acc_fn = None
+                    if output_shape[-1] == 1 or self.loss_functions[i] == objectives.binary_crossentropy:
+                        # case: binary accuracy
+                        acc_fn = metrics_module.binary_accuracy
+                    elif self.loss_functions[i] == objectives.sparse_categorical_crossentropy:
+                        # case: categorical accuracy with sparse targets
+                        acc_fn = metrics_module.sparse_categorical_accuracy
+                    else:
+                        acc_fn = metrics_module.categorical_accuracy
 
-	                    append_metric(i, 'acc', acc_fn(y_true, y_pred))
-	                else:
-	                    metric_fn = metrics_module.get(metric)
-	                    metric_result = metric_fn(y_true, y_pred)
+                    append_metric(i, 'acc', acc_fn(y_true, y_pred))
+                else:
+                    metric_fn = metrics_module.get(metric)
+                    metric_result = metric_fn(y_true, y_pred)
 
-	                    if not isinstance(metric_result, dict):
-	                        metric_result = {
-	                            metric_fn.__name__: metric_result
-	                        }
+                    if not isinstance(metric_result, dict):
+                        metric_result = {
+                            metric_fn.__name__: metric_result
+                        }
 
-	                    for name, tensor in six.iteritems(metric_result):
-	                        append_metric(i, name, tensor)
+                    for name, tensor in six.iteritems(metric_result):
+                        append_metric(i, name, tensor)
 
         # prepare gradient updates and state updates
         self.optimizer = optimizers.get(optimizer)
         self.total_loss = total_loss
         self.sample_weights = sample_weights
-        self.loss_functions = loss_functions          # [DV] added for ctc
-        self.masks = masks                            # [DV] added for ctc
 
         # functions for train, test and predict will
         # be compiled lazily when required.
@@ -723,16 +708,6 @@ class Model(Container):
                 inputs = self.inputs + self.targets + self.sample_weights + [K.learning_phase()]
             else:
                 inputs = self.inputs + self.targets + self.sample_weights
-            masks = []                                                       # [DV] add for ctc sm_mask
-            for mask in self.masks:
-                if mask is not None:
-                    masks.append(mask)
-            inputs += masks
-            # print('    @Line688, self.sample_weights = ', self.sample_weights)
-            # get trainable weights
-            #trainable_weights = []
-            #for layer in self.layers:
-            #    trainable_weights += collect_trainable_weights(layer)
 
             training_updates = self.optimizer.get_updates(self._collected_trainable_weights,
                                                           self.constraints,
@@ -740,20 +715,10 @@ class Model(Container):
             updates = self.updates + training_updates
 
             # returns loss and metrics. Updates weights at each call.
-            return_sm = False                                                # [DV] add for ctc, return score matrix if required.
-            for key in kwargs:
-                if key == 'return_sm':
-                    return_sm = kwargs[key]
-            if return_sm == False:
-	            self.train_function[name] = K.function(inputs,
-	                                             [self.total_loss] + self.metrics_tensors,
-	                                             updates=updates,
-	                                             **self._function_kwargs)
-            else:
-                self.train_function[name] = K.function(inputs,
-                                                 [self.total_loss] + self.metrics_tensors + self.outputs,
-                                                 updates=updates,
-                                                 **self._function_kwargs)
+            self.train_function[name] = K.function(inputs,                                 # [DV] add 'name' para
+                                             [self.total_loss] + self.metrics_tensors,
+                                             updates=updates,
+                                             **self._function_kwargs)
 
     def _make_test_function(self, name='default'):    # [DV] add 'name' for multiple test functions support
         if not hasattr(self, 'test_function'):
@@ -763,14 +728,9 @@ class Model(Container):
                 inputs = self.inputs + self.targets + self.sample_weights + [K.learning_phase()]
             else:
                 inputs = self.inputs + self.targets + self.sample_weights
-            masks = []                                                         # [DV] add for ctc sm_mask
-            for mask in self.masks:
-                if mask is not None:
-                    masks.append(mask)
-            inputs += masks
             # return loss and metrics, no gradient updates.
             # Does update the network states.
-            self.test_function[name] = K.function(inputs,                      # [DV] add support for multiple test functions
+            self.test_function[name] = K.function(inputs,                         # [DV] add support for multiple test functions
                                             [self.total_loss] + self.metrics_tensors,
                                             updates=self.state_updates,
                                             **self._function_kwargs)
@@ -786,7 +746,7 @@ class Model(Container):
             # returns network outputs. Does not update weights.
             # Does update the network states.
             kwargs = getattr(self, '_function_kwargs', {})
-            self.predict_function[name] = K.function(inputs,
+            self.predict_function[name] = K.function(inputs,                  # [DV] add support for multiple test functions
                                                self.outputs,
                                                updates=self.state_updates,
                                                **kwargs)
@@ -1015,8 +975,6 @@ class Model(Container):
                 output_shapes.append(output_shape[:-1] + (1,))
             elif getattr(objectives, loss_fn.__name__, None) is None:
                 output_shapes.append(None)
-            elif loss_fn.__name__.startswith('ctc'):                               # [DV] add for ctc
-                output_shapes.append(None)
             else:
                 output_shapes.append(output_shape)
         x = standardize_input_data(x, self.input_names,
@@ -1158,21 +1116,6 @@ class Model(Container):
             ins = x + y + sample_weights + [1.]
         else:
             ins = x + y + sample_weights
-
-        sm_masks = []                                   # [DV] add for ctc
-        for key in kwargs:
-            if key.startswith('sm_mask'):
-                sm_masks.append(kwargs[key])
-        if len(sm_masks) == 0:                          # [DV] handle default value of 'sm_mask'
-            for i in range(len(self.outputs)):
-                if self.masks[i] is not None:
-                    x_element = x[i] if type(x) is list else x
-                    shape = x_element.shape
-                    sm_mask = np.ones(shape=shape[:-1], dtype=K._floatx)
-                    sm_masks.append(sm_mask)
-        if len(sm_masks) > 0:
-            ins += sm_masks
-
         self._make_train_function(name=name)           # [DV] add support for multiple train functions
         f = self.train_function[name]
 
@@ -1282,7 +1225,7 @@ class Model(Container):
                                   batch_size=batch_size, verbose=verbose)
 
     def train_on_batch(self, x, y,
-                       sample_weight=None, class_weight=None,              # [DV] sample_weight可以作为ctc的seq_mask (B, L)
+                       sample_weight=None, class_weight=None,              # [DV] sample_weight驴脡脪脭脳梅脦陋ctc碌脛seq_mask (B, L)
                        name = 'default',                                   # [DV] add support for multiple train functions
                        **kwargs):
         '''Runs a single gradient update on a single batch of data.
@@ -1328,26 +1271,7 @@ class Model(Container):
             ins = x + y + sample_weights + [1.]
         else:
             ins = x + y + sample_weights
-
-        sm_masks = []                                   # [DV] add for ctc
-        return_sm = False
-        for key in kwargs:
-            if key == 'return_sm':
-                return_sm = kwargs[key]
-            if key.startswith('sm_mask'):
-                sm_masks.append(kwargs[key])
-        if len(sm_masks) == 0:                          # [DV] handle default value of 'sm_mask' (B, T)
-            for i in range(len(self.outputs)):
-                if self.masks[i] is not None:
-                    x_element = x[i] if type(x) is list else x
-                    shape = x_element.shape
-                    sm_mask = np.ones(shape=shape[:-1], dtype=K._floatx)
-                    # print('    @Line1259, sm_mask.shape = ', sm_mask.shape)
-                    sm_masks.append(sm_mask)
-        if len(sm_masks) > 0:
-            ins += sm_masks
-
-        self._make_train_function(name=name, return_sm=return_sm)
+        self._make_train_function(name=name)
         outputs = self.train_function[name](ins)
         if len(outputs) == 1:
             return outputs[0]
@@ -1391,21 +1315,6 @@ class Model(Container):
             ins = x + y + sample_weights + [0.]
         else:
             ins = x + y + sample_weights
-
-        sm_masks = []                                   # [DV] add for ctc
-        for key in kwargs:
-            if key.startswith('sm_mask'):
-                sm_masks.append(kwargs[key])
-        if len(sm_masks) == 0:                          # [DV] handle default value of 'sm_mask'
-            for i in range(len(self.outputs)):
-                if self.masks[i] is not None:
-                    x_element = x[i] if type(x) is list else x
-                    shape = x_element.shape
-                    sm_mask = np.ones(shape=shape[:-1], dtype=K._floatx)
-                    sm_masks.append(sm_mask)
-        if len(sm_masks) > 0:
-            ins += sm_masks
-
         self._make_test_function(name=name)
         outputs = self.test_function[name](ins)
         if len(outputs) == 1:

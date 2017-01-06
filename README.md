@@ -1,8 +1,6 @@
 # Keras-CTC
 [![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/david-leon/keras_CTC/blob/master/LICENSE)  
-A modified fork of Keras with multiple enhanced features, only Theano backend supported.
-
-[12-26-2016] Update Keras base version to 1.2.0
+A modified fork of Keras with multiple enhanced features, with base version 1.2.0, only Theano backend supported.
 
 ------------------
 ## Purpose  

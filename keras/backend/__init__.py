@@ -23,7 +23,7 @@ _keras_dir = os.path.join(_keras_base_dir, '.keras')
 if not os.path.exists(_keras_dir):
     os.makedirs(_keras_dir)
 
-# Default backend: TensorFlow.
+# Default backend: Theano   #[DV] change default backend to Theano
 _BACKEND = 'theano'
 
 _config_path = os.path.expanduser(os.path.join(_keras_dir, 'keras.json'))
