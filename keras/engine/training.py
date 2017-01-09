@@ -502,6 +502,7 @@ class Model(Container):
         if isinstance(loss, dict):
             for name in loss:
                 if name not in self.output_names:
+                    print(self.output_names)
                     raise ValueError('Unknown entry in loss '
                                      'dictionary: "' + name + '". '
                                      'Only expected the following keys: ' +
@@ -708,17 +709,26 @@ class Model(Container):
                 inputs = self.inputs + self.targets + self.sample_weights + [K.learning_phase()]
             else:
                 inputs = self.inputs + self.targets + self.sample_weights
+            print('Line712, self.targets=', self.targets)
 
             training_updates = self.optimizer.get_updates(self._collected_trainable_weights,
                                                           self.constraints,
                                                           self.total_loss)
             updates = self.updates + training_updates
 
-            # returns loss and metrics. Updates weights at each call.
-            self.train_function[name] = K.function(inputs,                                 # [DV] add 'name' para
-                                             [self.total_loss] + self.metrics_tensors,
+            func_outputs = [self.total_loss] + self.metrics_tensors
+            return_outputs = False                                                # [DV] add 'name' para; add support for returning outputs during training
+            for key in kwargs:
+                if key == 'return_outputs':
+                    return_outputs = kwargs[key]
+            # print('return_outputs = ', return_outputs)
+            if return_outputs == True:
+                func_outputs += self.outputs
+            self.train_function[name] = K.function(inputs,
+                                             func_outputs,
                                              updates=updates,
                                              **self._function_kwargs)
+
 
     def _make_test_function(self, name='default'):    # [DV] add 'name' for multiple test functions support
         if not hasattr(self, 'test_function'):
@@ -981,19 +991,22 @@ class Model(Container):
                                    self.internal_input_shapes,
                                    check_batch_dim=False,
                                    exception_prefix='model input')
-        y = standardize_input_data(y, self.output_names,
-                                   output_shapes,
-                                   check_batch_dim=False,
-                                   exception_prefix='model target')
+        if y is not None:
+            y = standardize_input_data(y, self.output_names,
+                                       output_shapes,
+                                       check_batch_dim=False,
+                                       exception_prefix='model target')
         sample_weights = standardize_sample_weights(sample_weight,
                                                     self.output_names)
         class_weights = standardize_class_weights(class_weight,
                                                   self.output_names)
-        sample_weights = [standardize_weights(ref, sw, cw, mode)
-                          for (ref, sw, cw, mode)
-                          in zip(y, sample_weights, class_weights, self.sample_weight_modes)]
-        check_array_lengths(x, y, sample_weights)
-        check_loss_and_target_compatibility(y, self.loss_functions, self.internal_output_shapes)
+        # [DV] ToDo: Check whether it is safe to bypass these following 3 sentences
+        if y is not None:
+            sample_weights = [standardize_weights(ref, sw, cw, mode)
+                              for (ref, sw, cw, mode)
+                              in zip(y, sample_weights, class_weights, self.sample_weight_modes)]
+            check_array_lengths(x, y, sample_weights)
+            check_loss_and_target_compatibility(y, self.loss_functions, self.internal_output_shapes)
         if self.stateful and batch_size:
             if x[0].shape[0] % batch_size != 0:
                 raise ValueError('In a stateful network, '
@@ -1225,7 +1238,7 @@ class Model(Container):
                                   batch_size=batch_size, verbose=verbose)
 
     def train_on_batch(self, x, y,
-                       sample_weight=None, class_weight=None,              # [DV] sample_weight¿ÉÒÔ×÷ÎªctcµÄseq_mask (B, L)
+                       sample_weight=None, class_weight=None,
                        name = 'default',                                   # [DV] add support for multiple train functions
                        **kwargs):
         '''Runs a single gradient update on a single batch of data.
@@ -1268,10 +1281,21 @@ class Model(Container):
             class_weight=class_weight,
             check_batch_dim=True)
         if self.uses_learning_phase and not isinstance(K.learning_phase, int):
-            ins = x + y + sample_weights + [1.]
+            if y is not None:                            # [DV] handle the case where 'y' is not needed.
+                ins = x + y + sample_weights + [1.]
+            else:
+                ins = x + sample_weights + [1.]
         else:
-            ins = x + y + sample_weights
-        self._make_train_function(name=name)
+            if y is not None:
+                ins = x + y + sample_weights
+            else:
+                ins = x + sample_weights
+
+        return_outputs = False                           # [DV] add support for returning outputs during training
+        for key in kwargs:
+            if key == 'return_outputs':
+                return_outputs = kwargs[key]
+        self._make_train_function(name=name, return_outputs=return_outputs)
         outputs = self.train_function[name](ins)
         if len(outputs) == 1:
             return outputs[0]

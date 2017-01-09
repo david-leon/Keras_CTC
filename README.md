@@ -41,7 +41,7 @@ To use another train/test/predict function besides the 'default' one, just need 
 
 [9] **Merge** class is modified to support variational length input.
 
-[10] **SpatialTransformer** layer is introduced, alpha version.
+[10] **SpatialTransformer** layer is introduced.
 
 ------------------
 ## Usage Guide (draft)
