@@ -2,6 +2,8 @@
 [![license](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/david-leon/keras_CTC/blob/master/LICENSE)  
 A modified fork of Keras with multiple enhanced features, with base version 1.0.6, only Theano backend supported.
 
+**I'm transferring from Keras to Lasagne framework, so this project is frozen with no definite schedule**
+
 ------------------
 ## Purpose  
 This fork was mainly about transplanting a CTC (*Connectionist Temporal Classification*) implementation into Keras, which feature has been missing by Keras for quite a long time. Since then many more features are being added, for example support for variational length input, FCN, FCRN, etc. Check the *Features* part below.  
